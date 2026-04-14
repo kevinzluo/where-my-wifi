@@ -1,0 +1,49 @@
+ \NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{newc}[2026/02/19 Personal math macros]
+
+% Packages (use RequirePackage inside .sty)
+\RequirePackage{amsmath}
+\RequirePackage{amsthm}
+\RequirePackage{amssymb}
+\RequirePackage{dsfont}
+\RequirePackage{mathrsfs}
+\RequirePackage{graphicx}
+\RequirePackage{booktabs}
+\RequirePackage{enumitem}
+
+% Blackboard / standard sets
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathsf{N}}
+\newcommand{\bl}{\mathbf}
+\newcommand{\bs}{\boldsymbol}
+\newcommand{\tr}{\mathsf{Tr}}
+\renewcommand{\P}{\mathbb{P}}
+
+% Operators / stats words
+\newcommand{\var}{\text{Var}}
+\newcommand{\cov}{\text{Cov}}
+\newcommand{\corr}{\text{Corr}}
+
+% Distribution names
+\newcommand{\Bern}{\textnormal{Bern}}
+\newcommand{\Bin}{\textnormal{Bin}}
+\newcommand{\Beta}{\textnormal{Beta}}
+\newcommand{\Mult}{\textnormal{Mult}}
+\newcommand{\Gam}{\textnormal{Gamma}}
+\newcommand{\Geom}{\textnormal{Geom}}
+\newcommand{\HGeom}{\textnormal{HGeom}}
+\newcommand{\NBin}{\textnormal{NBin}}
+\newcommand{\Expo}{\textnormal{Expo}}
+\newcommand{\Pois}{\textnormal{Pois}}
+\newcommand{\Unif}{\textnormal{Unif}}
+
+% Method names
+\newcommand{\mom}{\mathrm{MoM}}
+
+% Solution environment
+\newenvironment{solution}
+  {\vspace{1em}\par\noindent\textit{Solution.}\ }
+  {}
+
+\endinput
