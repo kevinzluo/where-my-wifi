@@ -1,0 +1,477 @@
+% Document Formatting
+\makeatletter
+\@ifpackageloaded{geometry}{}
+    {\usepackage[margin=1in]{geometry}}
+\makeatother
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Optional Formatting
+
+% if using indentations, do \usepackage[useIndent]{preamble}
+% if using headers, do \usepackage[useHeader]{preamble}
+% if force-overriding previously defined commands, do \usepackage[Override]{preamble}
+% if not including specific theorem environments, do \usepackage[noEnvs]{preamble}
+% if loading extra xcolor colors, do \usepackage[extraColors]{preamble}
+
+% Defaults: noIndent, noHeader, noOverride, useEnvs, baseColors
+
+\newif\ifnoIndent
+\DeclareOption{noIndent}{\noIndenttrue}
+\DeclareOption{useIndent}{\noIndentfalse}
+
+\newif\ifuseHeader
+\DeclareOption{useHeader}{\useHeadertrue}
+\DeclareOption{noHeader}{\useHeaderfalse}
+
+\newif\ifnoOverride
+\DeclareOption{noOverride}{\noOverridetrue}
+\DeclareOption{Override}{\noOverridefalse}
+
+\newif\ifextraColors
+\DeclareOption{extraColors}{\extraColorstrue}
+\DeclareOption{baseColors}{\extraColorsfalse}
+
+\newif\ifuseEnvs
+\DeclareOption{useEnvs}{\useEnvstrue}
+\DeclareOption{noEnvs}{\useEnvsfalse}
+
+% default options
+\ExecuteOptions{noIndent}
+\ExecuteOptions{noHeader}
+\ExecuteOptions{noOverride}
+\ExecuteOptions{baseColors}
+\ExecuteOptions{useEnvs}
+
+% process user settings
+\ProcessOptions
+
+% control paragraph spacing/indenting
+\ifnoIndent
+    \usepackage{parskip}
+\fi
+
+% control document header
+\ifuseHeader
+    \usepackage{fancyhdr}
+    \pagestyle{fancy}
+    \setlength{\headheight}{15pt}
+\fi
+
+% control package import behavior
+
+\makeatletter
+\newcommand{\alwaysoverride}[3]{%
+    \@ifundefined{\expandafter\@gobble\string#1}
+        {\newcommand{#1}[#2]{#3}}%
+        {\renewcommand{#1}[#2]{#3}}%
+}
+\makeatother
+
+\ifnoOverride
+    \newcommand{\definecommand}[3]{\providecommand{#1}[#2]{#3}}
+\else
+    \newcommand{\definecommand}[3]{\alwaysoverride{#1}{#2}{#3}}
+\fi
+
+\ifextraColors
+    \usepackage[dvipsnames, svgnames, x11names]{xcolor}
+\else
+    \usepackage{xcolor}
+\fi
+
+% theorem definition behavior controlled in Theorem Environments section
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\usepackage{multicol} % page column formatting
+
+\usepackage[colorlinks=true, pdfstartview=FitV, linkcolor=blue,
+citecolor=blue, urlcolor=blue]{hyperref} % hyperlinks
+
+\usepackage{pdfpages} % include pdfs
+
+\usepackage{marvosym} % special symbols, particularly \biohazard
+
+% generate a title box
+\definecommand{\titlebox}{5}{
+    \noindent
+    \begin{center}
+        \framebox{
+            \vbox{\vspace{2mm}
+            \hbox to 6.25in { {\normalsize \bf #1 \hfill #2} }
+            \vspace{4mm}
+            \hbox to 6.25in { {\Large \hfill #3 \hfill} }
+            \vspace{2mm}
+            \hbox to 6.25in { {\normalsize \it #4 \hfill #5} }
+            \vspace{2mm}}
+        }
+    \end{center}
+    \vspace*{4mm}
+}
+
+\usepackage{caption} % figure captions
+
+\usepackage{booktabs} % table formatting
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Miscellaneous Utility
+
+\usepackage{tikz} % drawing
+\usepackage{pgfplots} % plotting
+\pgfplotsset{compat=1.18}
+
+\usepackage{wrapfig} % image formatting
+
+\usepackage{listings} % code formatting, https://www.overleaf.com/learn/latex/Code_listing
+
+\usepackage[linesnumbered,ruled,vlined]{algorithm2e} % algorithm environments
+
+\usepackage[shortlabels]{enumitem} % list formatting
+% adjust labels using \begin{enumerate}{a)}
+
+\definecommand{\code}{1}{\texttt{#1}} % inline code snippet
+
+% full python code block, use \begin{codeblock}{python}
+\usepackage{tcolorbox}
+\tcbuselibrary{minted, breakable, xparse, skins}
+\definecolor{bg}{gray}{0.95}
+\definecolor{crimson}{rgb}{0.86, 0.08, 0.24}
+\newcommand{\codeborderthickness}{1pt}
+\DeclareTCBListing{codeblock}{O{}m!O{}}{%
+  breakable=true,
+  listing engine=minted,
+  listing only,
+  minted language=#2,
+  minted style=default,
+  minted options={%
+    % linenos,
+    gobble=0,
+    breaklines=true,
+    breakafter=,,
+    fontsize=\small,
+    numbersep=12pt,
+    #1},
+  boxsep=0pt,
+  left skip=0pt,
+  right skip=0pt,
+  left=27pt-\codeborderthickness,
+  right=0pt,
+  top=3pt,
+  bottom=3pt,
+  arc=5pt,
+  leftrule=\codeborderthickness,
+  rightrule=\codeborderthickness,
+  bottomrule=\codeborderthickness,
+  toprule=\codeborderthickness,
+  colback=bg,
+  colframe=crimson,
+  enhanced,
+  overlay={%
+    \begin{tcbclipinterior}
+    \fill[black!15] (frame.south west) rectangle ([xshift=20pt]frame.north west);
+    \end{tcbclipinterior}},
+  #3}
+
+\definecommand{\ans}{1}{\color{blue} #1 \color{black}} % blue-colored answer
+
+\definecommand{\noin}{0}{\noindent} % no indent
+
+% colored text
+\definecommand{\red}{1}{\textcolor{red}{#1}}
+\definecommand{\green}{1}{\textcolor{green}{#1}}
+\definecommand{\blue}{1}{\textcolor{blue}{#1}}
+
+% quotations
+\definecommand{\quoted}{2}{
+    \begin{quote}
+        ``#1'' \\
+        \hspace*{0pt}\hfill --- #2
+    \end{quote}}
+
+% divider lines
+\definecommand{\divider}{0}{\noindent\rule{\textwidth}{0.4pt}}
+\usepackage{dashrule}
+\newcommand{\dashdivider}{\noindent\hdashrule{\textwidth}{0.4pt}{1mm 1mm}}
+
+% Highlighting
+\usepackage{soul}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Math Formatting
+
+\usepackage{amsmath}
+
+\usepackage[mathscr]{euscript}
+\let\euscr\mathscr \let\mathscr\relax % not sure what this does tbh
+\usepackage[scr]{rsfso}
+
+\usepackage{amsthm}
+
+\usepackage{amssymb}
+
+\usepackage{bbm}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Theorem Enviornments
+
+\newtheorem{counter}{\_\_environment\_counter} % used as a counter for theorem environments
+% \numberwithin{counter}{subsection}
+
+% general purpose environments, use \begin{env_name}{Header Text}
+% plain style (bold header, italic text) : penv
+% definition style (bold header, plain text) : denv
+% remark style (italic header, plain text) : renv
+% add '*' to the end of the env_name for a non-numbered enviornment
+
+\newcommand{\envinnerheader}{}
+
+% plain style, env_name = penv, penv* for non-numbered
+
+\theoremstyle{plain}
+\newtheorem{plain_env}[counter]{\envinnerheader}
+\newtheorem*{plain_nonum}{\envinnerheader}
+
+\newenvironment{penv}[1]
+    {\renewcommand\envinnerheader{#1}\begin{plain_env}}
+    {\end{plain_env}}
+\newenvironment{penv*}[1]
+    {\renewcommand\envinnerheader{#1}\begin{plain_nonum}}
+    {\end{plain_nonum}}
+
+% definition style, env_name = denv, denv* for non-numbered
+
+\theoremstyle{definition}
+\newtheorem{def_env}[counter]{\envinnerheader}
+\newtheorem*{def_nonum}{\envinnerheader}
+
+\newenvironment{denv}[1]
+    {\renewcommand\envinnerheader{#1}\begin{def_env}}
+    {\end{def_env}}
+\newenvironment{denv*}[1]
+    {\renewcommand\envinnerheader{#1}\begin{def_nonum}}
+    {\end{def_nonum}}
+
+% remark style, env_name = renv, renv* for non-numbered
+    
+\theoremstyle{remark}
+\newtheorem{rem_env}[counter]{\envinnerheader}
+\newtheorem*{rem_nonum}{\envinnerheader}
+
+\newenvironment{renv}[1]
+    {\renewcommand\envinnerheader{#1}\begin{rem_env}}
+    {\end{rem_env}}
+\newenvironment{renv*}[1]
+    {\renewcommand\envinnerheader{#1}\begin{rem_nonum}}
+    {\end{rem_nonum}}
+
+
+% specific theorem environments, does not play well with overriding
+\ifuseEnvs
+    \theoremstyle{plain} % change environment format, italicized text
+    
+    \newtheorem{theorem}[counter]{Theorem} % new theorem
+    \newtheorem*{theorem*}{Theorem} % new unnumbered theorem
+    \newtheorem{proposition}[counter]{Proposition} % new proposition
+    \newtheorem*{proposition*}{Proposition} % new unnumbered proposition
+    \newtheorem{lemma}[counter]{Lemma} % new lemma
+    \newtheorem*{lemma*}{Lemma} % new unnumbered lemma
+    \newtheorem{corollary}[counter]{Corollary} % new corollary
+    \newtheorem*{corollary*}{Corollary} % new unnumbered corollary
+    
+    \theoremstyle{definition} % change environment format, roman text
+    
+    \newtheorem{problem}[counter]{Problem} % new problem
+    \newtheorem*{problem*}{Problem} % new unnumbered problem
+    \newtheorem{solution}[counter]{Solution} % solution
+    \newtheorem*{solution*}{Solution} % unnumbered solution
+    \newtheorem{example}[counter]{Example} % new example
+    \newtheorem*{example*}{Example} % new unnumbered example
+    \newtheorem{definition}[counter]{Definition} % new definition
+    \newtheorem*{definition*}{Definition} % new unnumbered definition
+    \newtheorem{biohazard}[counter]{\Biohazard} % biohazard
+    \newtheorem*{biohazard*}{\Biohazard} % unnumbered biohazard
+    
+    \theoremstyle{remark} % change environment format, non=bold title
+
+    \newtheorem{remark}[counter]{Remark}
+    \newtheorem*{remark*}{Remark}
+\fi
+
+\newtcolorbox{solutionbox}{
+  colback=green!5,
+  colframe=green!50!black,
+  fonttitle=\bfseries,
+  title=Solution,
+  breakable,
+  enhanced,
+  left=1em,
+  right=1em,
+  top=0.5em,
+  bottom=0.5em
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Statistical Distributions
+
+\definecommand{\plainfont}{1}{\textnormal{{#1}}}
+
+\definecommand{\Bern}{0}{\plainfont{Bern}} % Bernoulli
+\definecommand{\Bin}{0}{\plainfont{Bin}} % Binomial
+\definecommand{\Pois}{0}{\plainfont{Pois}} % Poisson
+\definecommand{\Geom}{0}{\plainfont{Geom}} % Geometric
+\definecommand{\FS}{0}{\plainfont{FS}} % First Success
+\definecommand{\HGeom}{0}{\plainfont{HGeom}} % Hypergeometric
+\definecommand{\NBin}{0}{\plainfont{NBin}} % Negative Binomial
+\definecommand{\Beta}{0}{\plainfont{Beta}} % Beta
+\definecommand{\Gam}{0}{\plainfont{Gamma}} % Gamma
+\definecommand{\N}{0}{\mathcal{N}} % Normal
+\definecommand{\LogN}{0}{\mathcal{LN}} % Log Normal
+\definecommand{\Expo}{0}{\plainfont{Expo}} % Exponential
+\definecommand{\Unif}{0}{\plainfont{Unif}} % Uniform
+\definecommand{\DUnif}{0}{\plainfont{DUnif}} % Discrete Uniform
+\definecommand{\Ind}{0}{\mathbbm{1}} % Indicator
+\definecommand{\Lap}{0}{\plainfont{Laplace}} % Laplace
+\definecommand{\W}{0}{\mathcal{W}} % Wishart
+\definecommand{\Rad}{0}{\plainfont{Rad}} % Rademacher
+\definecommand{\chisq}{0}{\chi^2} % Chi squared
+\definecommand{\invchisq}{0}{\plainfont{Inv-}\chi^2} % Inverse chi-squared
+\definecommand{\studentt}{0}{\plainfont{t}} % Student t
+\definecommand{\F}{0}{\plainfont{F}} % F
+\definecommand{\Logistic}{0}{\plainfont{Logistic}} % Logistic
+\definecommand{\Pareto}{0}{\plainfont{Pareto}} % Pareto
+\definecommand{\Triangle}{0}{\plainfont{Tri}} % Triangle
+\definecommand{\Weibull}{0}{\plainfont{Weibull}} % Weibull
+\definecommand{\Gumbel}{0}{\plainfont{Gumbel}} % Gumbel
+\definecommand{\Cauchy}{0}{\plainfont{Cauchy}} % Cauchy
+\definecommand{\GP}{0}{\mathcal{GP}} % Gaussian Process
+\definecommand{\K}{0}{\mathcal{K}} % kernel function
+\definecommand{\Mult}{0}{\plainfont{Multinomial}} % Multinomial
+\definecommand{\NIX}{0}{\plainfont{NIX}} % Normal Inverse Chi-square
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Statistical Metrics
+
+\alwaysoverride{\P}{0}{\mathbb{P}} % probability
+\alwaysoverride{\E}{0}{\mathbb{E}} % expectation
+\definecommand{\Var}{0}{\plainfont{Var}} % variance
+\definecommand{\Cov}{0}{\plainfont{Cov}} % covariance
+\definecommand{\Corr}{0}{\plainfont{Corr}} % correlation
+\definecommand{\SD}{0}{\plainfont{SD}} % standard deviation
+
+\definecommand{\Bias}{0}{\plainfont{Bias}} % bias
+\definecommand{\SE}{0}{\plainfont{SE}} % standard error
+\definecommand{\RSS}{0}{\plainfont{RSS}} % residual sum of squares
+\definecommand{\MSE}{0}{\plainfont{MSE}} % mean squared error
+\definecommand{\RMSE}{0}{\plainfont{RMSE}} % root mean squared error
+\definecommand{\FisherI}{0}{\mathcal{I}} % Fisher informatino
+\definecommand{\loss}{0}{\mathscr{L}} % loss function
+\definecommand{\risk}{0}{\mathcal{R}} % risk function
+
+\definecommand{\pval}{0}{\plainfont{p-val}} % p value
+\definecommand{\MLE}{1}{\hat{{#1}}_\plainfont{MLE}} % maximum likelihood estimator
+\definecommand{\wMLE}{1}{\widehat{{#1}}_\plainfont{MLE}} % mle with wide hat
+\definecommand{\MoM}{1}{\hat{{#1}}_\plainfont{MoM}} % method of moments estimator
+\definecommand{\wMoM}{1}{\widehat{{#1}}_\plainfont{MoM}} % mom estimator with wide hat
+
+\definecommand{\mean}{0}{\plainfont{mean}} % mean
+\definecommand{\med}{0}{\plainfont{median}} % median
+\definecommand{\mode}{0}{\plainfont{mode}} % mode
+
+\definecommand{\DKL}{0}{\mathcal{D}_{\plainfont{KL}}} % KL divergence
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Statistical Relations
+
+\definecommand{\iid}{0}{\overset{iid}{\sim}} % iid distributed
+\definecommand{\inddis}{0}{\overset{\plainfont{indep}}{\sim}} % independently distributed
+\definecommand{\appdis}{0}{\; \dot\sim \;} % approx distributed
+\definecommand{\eqdis}{0}{\overset{d}{=}} % equal in distribution
+\definecommand{\withp}{0}{\plainfont{ wp }} % with probability
+
+\definecommand{\conv}{1}{\overset{{#1}\to\infty}{\to}} % converges as {#1} to infinity
+\definecommand{\convd}{0}{\overset{d}{\to}} % converges in distribution
+\definecommand{\convp}{0}{\overset{p}{\to}} % converges in probability
+\definecommand{\convas}{0}{\overset{a.s.}{\to}} % converges almost surely
+
+\definecommand{\iseq}{0}{\overset{?}{=}} % might be equal
+\definecommand{\defeq}{0}{\overset{\plainfont{def}}{=}} % defined to be equal
+
+\definecommand{\indep}{0}{\perp \!\!\! \perp} % independence
+\definecommand{\bigmid}{0}{\;\bigg|\;} % tall conditioning bar
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Math Symbols
+
+\definecommand{\Nat}{0}{\mathbb{N}} % naturals
+\definecommand{\Z}{0}{\mathbb{Z}} % integers
+\definecommand{\Q}{0}{\mathbb{Q}} % rationals
+\definecommand{\R}{0}{\mathbb{R}} % reals
+\definecommand{\C}{0}{\mathbb{C}} % complexes
+\definecommand{\B}{0}{\mathscr{B}} % borel sigma-algebra
+
+\definecommand{\linspace}{0}{\mathcal{L} \,} % linear space
+\definecommand{\rowspace}{0}{\mathcal{L}_{\plainfont{row}} \,} % row space
+\definecommand{\colspace}{0}{\mathcal{L}_{\plainfont{col}} \,} % column space
+
+\definecommand{\J}{0}{\mathcal{J} \,} % Jacobian
+\definecommand{\proj}{2}{\text{proj}_{#1}\, \left(#2\right)} % projection
+
+\definecommand{\1}{0}{\vec{1}} % ones vector
+\definecommand{\I}{0}{\mathbf{I}} % identity matrix
+
+% Scripted Letters
+\definecommand{\sA}{0}{\mathcal{A}}
+\definecommand{\sB}{0}{\mathcal{B}}
+\definecommand{\sC}{0}{\mathcal{C}}
+\definecommand{\sF}{0}{\mathcal{F}}
+\definecommand{\sG}{0}{\mathcal{G}}
+\definecommand{\sP}{0}{\mathcal{P}}
+\definecommand{\sL}{0}{\mathcal{L}}
+\definecommand{\sX}{0}{\mathcal{X}}
+\definecommand{\sY}{0}{\mathcal{Y}}
+\definecommand{\sZ}{0}{\mathcal{Z}}
+
+\definecommand{\Borel}{0}{\mathcal{B}}
+\definecommand{\Lebesgue}{0}{\mathcal{L}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Math Functions 
+
+\definecommand{\e}{1}{e^{#1}}
+\definecommand{\nroot}{2}{\sqrt[\leftroot{-2}\uproot{2}#1]{#2}} % nth root
+\definecommand{\abs}{1}{\left\lvert #1 \right\rvert} % absolute value
+\definecommand{\argmax}{0}{\arg\max} % argmax
+\definecommand{\argmin}{0}{\arg\min} % argmin
+\definecommand{\inner}{2}{\langle #1, #2 \rangle} % inner product
+\definecommand{\norm}{1}{\left\lVert #1 \right\rVert} % norm
+\definecommand{\tr}{0}{\plainfont{tr} \,} % matrix trace
+\definecommand{\rank}{0}{\plainfont{rank} \,} % matrix rank
+\definecommand{\vectorize}{0}{\plainfont{vec} \,} % matrix vectorization
+\definecommand{\sign}{0}{\plainfont{sign} \,} % sign
+\definecommand{\diag}{0}{\plainfont{diag} \,} % diagonal
+\definecommand{\limn}{0}{\lim_{n \to \infty}} % limit as n goes to infinity
+\definecommand{\lowerboundvar}{0}{}
+\definecommand{\upperboundvar}{0}{}
+\definecommand{\setboundvars}{2}{ % set bounds, use this for changing bounds of sum/int
+    \renewcommand{\lowerboundvar}{#1} \renewcommand{\upperboundvar}{#2} }
+\definecommand{\summat}{2}{\sum_{#1 = \lowerboundvar}^{\upperboundvar} #2} % sum of #1 = lb to ub
+\definecommand{\integ}{2}{\int_{\lowerboundvar}^{\upperboundvar} #1 \, d#2} % integral from lb to ub
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Math Formatting
+
+\definecommand{\V}{1}{\vec{#1}}
+\definecommand{\mat}{1}{\mathbf{#1}}
+
+\definecommand{\us}{2}{\underset{#1}{#2}}
+\definecommand{\os}{2}{\overset{#1}{#2}}
