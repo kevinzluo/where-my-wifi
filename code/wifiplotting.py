@@ -110,7 +110,7 @@ def fetch_building_polygons(bounds, zoom, timeout=10):
     return polygons
 
 
-def aggregate_rssi_points(wifi_df, value):
+def aggregate_wifi_points(wifi_df, value):
     subdf = wifi_df.dropna(
         subset=["selected_latitude", "selected_longitude", value]
     ).copy()
@@ -131,8 +131,8 @@ def aggregate_rssi_points(wifi_df, value):
     return grouped
 
 
-def plot_rssi_heatmap(wifi_df, value="wdutil_rssi_effective_dbm", zoom=None):
-    points = aggregate_rssi_points(wifi_df, value)
+def plot_wifi_heatmap(wifi_df, value="wdutil_rssi_effective_dbm", zoom=None):
+    points = aggregate_wifi_points(wifi_df, value)
 
     lons = points["selected_longitude"].tolist()
     lats = points["selected_latitude"].tolist()
