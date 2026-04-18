@@ -110,32 +110,47 @@ def fetch_building_polygons(bounds, zoom, timeout=10):
     return polygons
 
 
-def aggregate_wifi_points(wifi_df, value):
-    subdf = wifi_df.dropna(
-        subset=["selected_latitude", "selected_longitude", value]
-    ).copy()
-    if subdf.empty:
-        raise ValueError(f"No rows with selected coordinates and usable {value} values were found.")
-
-    subdf["label"] = subdf["waypoint_id"].fillna(subdf["building"]).fillna("unknown")
+def aggregate_wifi_points(wifi_df, value=None, new_data=None):
+    wifi_df = wifi_df.copy()
+    if new_data is not None:
+        wifi_df['new_data'] = new_data
+        value = 'new_data'
     grouped = (
-        subdf.groupby(["selected_latitude", "selected_longitude"], as_index=False)
+        wifi_df.groupby(["latitude", "longitude"], as_index=False)
         .agg(
             mean_value=(value, "mean"),
             sample_count=(value, "size"),
-            building=("building", first_non_null),
-            label=("label", first_non_null),
+            # building=("building", first_non_null),
+            # label=("label", first_non_null),
         )
         .sort_values(["mean_value", "sample_count"], ignore_index=True)
     )
     return grouped
 
 
-def plot_wifi_heatmap(wifi_df, value="wdutil_rssi_effective_dbm", zoom=None):
-    points = aggregate_wifi_points(wifi_df, value)
+def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap=False, plotname=None):
+    '''
+    Plot WiFi data on heatmap
+    wifi_df : used to define map locations
+    value : column name to be plotted, default = rssi
+    new_data : new data to be plotted, same ordering as wifi_df, overrides `value`
 
-    lons = points["selected_longitude"].tolist()
-    lats = points["selected_latitude"].tolist()
+    Coordinate priority: phone GPS, then mac CoreLocation, then legacy CoreLocation. Zero-placeholder wdutil rows use NaN
+    '''
+    if new_data is not None:
+        if plotname is None:
+            plotname = "UNKNOWN_VALUE_NAME"
+    else:
+        if value is None:
+            value = "rssi"
+            plotname = "RSSI"
+        if plotname is None:
+            plotname = value.capitalize()
+
+    points = aggregate_wifi_points(wifi_df, value, new_data)
+
+    lons = points["longitude"].tolist()
+    lats = points["latitude"].tolist()
     mean_value = points["mean_value"].to_numpy()
     bounds = padded_bounds(lons, lats)
     zoom = zoom or choose_zoom(lons, lats)
@@ -168,11 +183,11 @@ def plot_wifi_heatmap(wifi_df, value="wdutil_rssi_effective_dbm", zoom=None):
 
     if basemap_loaded:
         xs, ys = zip(
-            *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points["selected_longitude"], points["selected_latitude"]))
+            *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points["longitude"], points["latitude"]))
         )
     else:
-        xs = points["selected_longitude"].to_numpy()
-        ys = points["selected_latitude"].to_numpy()
+        xs = points["longitude"].to_numpy()
+        ys = points["latitude"].to_numpy()
 
     sizes = 70 + 14 * points["sample_count"].to_numpy()
     scatter = ax.scatter(
@@ -180,7 +195,7 @@ def plot_wifi_heatmap(wifi_df, value="wdutil_rssi_effective_dbm", zoom=None):
         ys,
         c=mean_value,
         s=sizes,
-        cmap="RdYlGn",
+        cmap="RdYlGn" + ("_r" if invert_cmap else ""),
         alpha=0.92,
         edgecolors="black",
         linewidths=0.6,
@@ -203,11 +218,11 @@ def plot_wifi_heatmap(wifi_df, value="wdutil_rssi_effective_dbm", zoom=None):
         ax.grid(alpha=0.3)
         ax.set_aspect(1 / np.cos(np.deg2rad(np.mean(lats))))
 
-    ax.set_title(f"Spatial heatmap of {value} using phone-first coordinates")
+    ax.set_title(f"Spatial Heatmap of {plotname}")
     ax.text(
         0.01,
         0.01,
-        f"Coordinate priority: phone GPS, then mac CoreLocation, then legacy CoreLocation. Zero-placeholder wdutil rows use NaN. Marker size = sample count.",
+        f"{'Smaller' if invert_cmap else 'Larger'} values are better. Marker size = sample count.",
         transform=ax.transAxes,
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
