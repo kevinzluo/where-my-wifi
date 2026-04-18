@@ -1,0 +1,41 @@
+\documentclass{article}
+\usepackage[useHeader, Override, useIndent]{preamble}
+
+%%%%%%%%%% TO FILL %%%%%%%%%%
+\def\docAuthor{Jamie Liu}
+\def\docTitle{Milestone 1: Problem Formulation}
+\def\docClass{STATS 305C}
+\def\docTerm{Spring 2026}
+\def\docDate{\today}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\lhead{\docAuthor}
+\chead{\docTitle}
+\rhead{\docClass}
+
+\begin{document}
+
+\section*{Project Overview}
+
+\subsection*{Motivation and Research Question} The sun is shining and the birds are chirping; it's an excellent day to do some work out in the sun. You find a perfect spot on a grassy field somewhere on campus, only to open your laptop to see the dreaded ``No Connection'' message. WiFi is something students, faculty, and researchers rely on constantly, but connectivity often feels unpredictable, especially outdoors. This inconsistency can be disruptive, especially when reliable connectivity is expected. Understanding WiFi as a kind of “signal field” across Stanford's campus could help explain these frustrating gaps. By mapping and modeling how signal strength actually behaves in real environments, we can start to answer practical questions: Where are the dead zones? Can we construct a reliable estimate of the signal field based on a (relatively) small number of samples?\footnote{\label{1} The motivation for this question is to extend the idea of field estimation from a single dataset to a Live Map for WiFi strength, where measurements can be taken by an array of sensors across campus. A small sample is desirable because increasing the number of sensors tends to increases cost and points of failure. Implementing this idea is beyond the scope of the proposed project.}
+
+\subsection*{Data} WiFi signal strength is typically measured by Received Signal Strength Indicator (RSSI), which describes pure signal strength, or by Signal-to-Noise Ratio (SNR) which measures signal strength compared to noise, e.g. interference, obstruction, etc. Both are measured in decibel-milliwatts (dBm), though some devices may report the quantities differently. While SNR is more reflective of actual WiFi performance, it can be slightly trickier to obtain measurements and be harder to interpret. There is no existing dataset of either for Stanford's campus, so data collection would be a part of the project itself. After deciding on some sampling scheme to sampled locations, we would physically go there to take measurements.
+
+\subsection*{Quality Issues and Uncertainty} The most obvious is the limited amount of data that may be collected. While a small sample is desirable (see Footnote \ref{1}), it may limit the quality of inference. I choose to instead see this as an interesting problem to tackle. Another issue is the sources of uncertainty. Measurement error is a given. One potential further complication is that signal strength depends on the measurement device (though relative strength is consistent across devices), so only one device can be used to make measurements. Worse is measurement instability; tiny changes in position or even the orientation of the measurement device can cause large fluctuations in RSSI and SNR, caused by multipath interference (when signals reach a receiver via multiple paths due to reflection, refraction, or diffraction).
+
+Another is unpredictable sources of uncertainty, such as temporary obstructions (like a large truck driving by), temporary interference (like a large crowd gathering nearby, though this mostly only applies to SNR), and temporary network outages (like an access point going down in a nearby building). However, if we can obtain a reliable estimate from a fixed set of measurements, then these temporary fluctuations can be mitigated by the idea in Footnote \ref{1}, as a Live Map would change to reflect the fluctuations.
+
+\subsection*{Statistical Framing} One idea is to model the signal strength (RSSI or SNR) $f$ as a latent function of physical position $(x, y)$. Then, from noisy observations $\{x_i, y_i, \tilde{f}(x_i, y_i)\}_{i=1}^n$, we would attempt to recover $f$. This is a fairly classical problem in spatial statistics (Ref \cite{cressie1993statistics}), with well-studied methods such as Kriging/Gaussian process regression (Ref \cite{rasmussen2006gaussian}) and spatial point processes/random field models (Ref \cite{moller2003statistical}). Neural networks have also been used, but these have the downside of being black boxes and limited uncertainty quantification. We could apply and potentially specialize these methods for our problem. Another potential interesting avenue of research is to use the geometry of the problem to improve inference. For example, if we hypothesize that signal is strongest at access points inside of buildings and decay with distance, then we could model the dynamics of the signal field as a 2D vector field with many point repellers.
+
+\newpage
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\section*{AI Use Statement}
+
+There are currently no concrete plans for use of AI tools, but they could be helpful in searching for relevant papers and for debugging code.
+
+\end{document}
+
+ 
