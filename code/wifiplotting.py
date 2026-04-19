@@ -115,8 +115,12 @@ def aggregate_wifi_points(wifi_df, value=None, new_data=None):
     if new_data is not None:
         wifi_df['new_data'] = new_data
         value = 'new_data'
+
+    not_nan = wifi_df[wifi_df[value].notna()]
+    is_nan = wifi_df[wifi_df[value].isna()]
+
     grouped = (
-        wifi_df.groupby(["latitude", "longitude"], as_index=False)
+        not_nan.groupby(["latitude", "longitude"], as_index=False)
         .agg(
             mean_value=(value, "mean"),
             sample_count=(value, "size"),
@@ -125,10 +129,19 @@ def aggregate_wifi_points(wifi_df, value=None, new_data=None):
         )
         .sort_values(["mean_value", "sample_count"], ignore_index=True)
     )
-    return grouped
+
+    na_grouped = (
+        is_nan.groupby(["latitude", "longitude"], as_index=False)
+        .agg(
+            mean_value=(value, "mean"),
+            sample_count=(value, "size"),
+        )
+        .sort_values(["mean_value", "sample_count"], ignore_index=True)
+    )
+    return grouped, na_grouped
 
 
-def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap=False, plotname=None):
+def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap=False, plotname=None, show_na=False):
     '''
     Plot WiFi data on heatmap
     wifi_df : used to define map locations
@@ -147,7 +160,7 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         if plotname is None:
             plotname = value.capitalize()
 
-    points = aggregate_wifi_points(wifi_df, value, new_data)
+    points, points_na = aggregate_wifi_points(wifi_df, value, new_data)
 
     lons = points["longitude"].tolist()
     lats = points["latitude"].tolist()
@@ -185,9 +198,14 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         xs, ys = zip(
             *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points["longitude"], points["latitude"]))
         )
+        xs_na, ys_na = zip(
+            *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points_na["longitude"], points_na["latitude"]))
+        )
     else:
         xs = points["longitude"].to_numpy()
         ys = points["latitude"].to_numpy()
+        xs_na = points_na["longitude"].to_numpy()
+        ys_na = points_na["latitude"].to_numpy()
 
     sizes = 70 + 14 * points["sample_count"].to_numpy()
     scatter = ax.scatter(
@@ -203,6 +221,19 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
     )
     colorbar = fig.colorbar(scatter, ax=ax, shrink=0.88)
     colorbar.set_label(f"Mean {value}")
+
+    if show_na:
+        sizes_na = 70 + 14 * points_na["sample_count"].to_numpy()
+        scatter = ax.scatter(
+            xs_na,
+            ys_na,
+            c='black',
+            s=sizes_na,
+            alpha=show_na,
+            edgecolors="black",
+            linewidths=0.6,
+            zorder=3,
+        )
 
     if basemap_loaded:
         left, top = lonlat_to_world(bounds[0], bounds[3], zoom)
@@ -228,4 +259,4 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
     )
     fig.tight_layout()
-    return fig, ax, points
+    return fig, ax, points, points_na
