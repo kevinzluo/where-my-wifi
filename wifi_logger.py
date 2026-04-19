@@ -31,9 +31,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ---------- output files ----------
 
-CSV_FILE = Path("wifi_samples.csv")
-RAW_JSONL_FILE = Path("wifi_raw.jsonl")
-RAW_DIR = Path("wifi_raw")
+CSV_FILE = Path("data/wifi_samples.csv")
+RAW_JSONL_FILE = Path("data/wifi_raw.jsonl")
+RAW_DIR = Path("data/wifi_raw")
 CSV_NULL = "null"
 
 CSV_FIELDS = [
