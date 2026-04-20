@@ -162,6 +162,8 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
 
     points, points_na = aggregate_wifi_points(wifi_df, value, new_data)
 
+    if points_na.shape[0] == 0: show_na = False
+
     lons = points["longitude"].tolist()
     lats = points["latitude"].tolist()
     mean_value = points["mean_value"].to_numpy()
