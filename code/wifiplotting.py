@@ -198,14 +198,16 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         xs, ys = zip(
             *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points["longitude"], points["latitude"]))
         )
-        xs_na, ys_na = zip(
-            *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points_na["longitude"], points_na["latitude"]))
-        )
+        if show_na:
+            xs_na, ys_na = zip(
+                *(lonlat_to_world(lon, lat, zoom) for lon, lat in zip(points_na["longitude"], points_na["latitude"]))
+            )
     else:
         xs = points["longitude"].to_numpy()
         ys = points["latitude"].to_numpy()
-        xs_na = points_na["longitude"].to_numpy()
-        ys_na = points_na["latitude"].to_numpy()
+        if show_na:
+            xs_na = points_na["longitude"].to_numpy()
+            ys_na = points_na["latitude"].to_numpy()
 
     sizes = 70 + 14 * points["sample_count"].to_numpy()
     scatter = ax.scatter(
