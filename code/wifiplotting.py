@@ -141,7 +141,7 @@ def aggregate_wifi_points(wifi_df, value=None, new_data=None):
     return grouped, na_grouped
 
 
-def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap=False, plotname=None, show_na=False):
+def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, cmap="RdYlGn", invert_cmap=False, plotname=None, show_na=False):
     '''
     Plot WiFi data on heatmap
     wifi_df : used to define map locations
@@ -157,7 +157,7 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         if value is None:
             value = "rssi"
             plotname = "RSSI"
-        if plotname is None:
+        elif plotname is None:
             plotname = value.capitalize()
 
     points, points_na = aggregate_wifi_points(wifi_df, value, new_data)
@@ -211,14 +211,15 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
             xs_na = points_na["longitude"].to_numpy()
             ys_na = points_na["latitude"].to_numpy()
 
+    if invert_cmap:
+        cmap += '_r'
     sizes = 70 + 14 * points["sample_count"].to_numpy()
-    print(max(xs), min(xs))
     scatter = ax.scatter(
         xs,
         ys,
         c=mean_value,
         s=sizes,
-        cmap="RdYlGn" + ("_r" if invert_cmap else ""),
+        cmap=cmap,
         alpha=0.92,
         edgecolors="black",
         linewidths=0.6,
@@ -264,4 +265,4 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
     )
     # fig.tight_layout()
-    return fig, ax, points, points_na, zoom
+    return fig, ax, points, points_na
