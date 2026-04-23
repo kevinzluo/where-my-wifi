@@ -212,6 +212,7 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
             ys_na = points_na["latitude"].to_numpy()
 
     sizes = 70 + 14 * points["sample_count"].to_numpy()
+    print(max(xs), min(xs))
     scatter = ax.scatter(
         xs,
         ys,
@@ -262,5 +263,5 @@ def plot_wifi_heatmap(wifi_df, value=None, new_data=None, zoom=None, invert_cmap
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
     )
-    fig.tight_layout()
-    return fig, ax, points, points_na
+    # fig.tight_layout()
+    return fig, ax, points, points_na, zoom
