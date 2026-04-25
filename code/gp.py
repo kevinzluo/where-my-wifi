@@ -22,8 +22,8 @@ def stable_cholesky(M, stabilizer=1e-8):
         stabilizer = stabilizer * 10
         chol = jnp.linalg.cholesky(M + jnp.eye(M.shape[0]) * stabilizer)
         return stabilizer, chol
-
-    valid_stabilizer, chol = jax.lax.while_loop(has_nan, recompute, (stabilizer, jnp.full(M.shape, jnp.nan)))
+    chol = jnp.linalg.cholesky(M)
+    valid_stabilizer, chol = jax.lax.while_loop(has_nan, recompute, (stabilizer, chol))
     return chol
 
 
@@ -37,15 +37,6 @@ def fast_inverse_cov(M, stabilizer=1e-8):
 
 
 @partial(jax.jit, static_argnames=['stabilizer'])
-def update_f(Sigma_0, Kn, stabilizer=1e-8):
-    '''
-    Compute a Gibbs update for f, given Sigma_0.
-    '''
-    Kn_inv = fast_inverse_cov(Kn + Sigma_0, stabilizer)
-    return Kn_inv
-
-
-@partial(jax.jit, static_argnames=['stabilizer'])
 def sample_inv_wishart(key, Psi, nu, stabilizer=1e-8):
     '''
     Samples from Inv-Wishart(Psi, nu).
@@ -55,47 +46,37 @@ def sample_inv_wishart(key, Psi, nu, stabilizer=1e-8):
     key_chi, key_norm = jr.split(key)
 
     # sample wishart
-    Psi_inv = fast_inverse_cov(Psi, stabilizer)
-    L = stable_cholesky(Psi_inv, stabilizer)
+    L = stable_cholesky(fast_inverse_cov(Psi, stabilizer), stabilizer)
     # Bartlett decomposition
     # Diagonal: sqrt chi-square
     chi2 = jr.chisquare(key_chi, df=nu - jnp.arange(d))
-    diag = jnp.sqrt(chi2)
     # Full matrix of normals
     Z = jr.normal(key_norm, shape=(d, d))
     # Keep strictly lower triangle
-    A = jnp.tril(Z, k=-1)
-    # Set diagonal
-    A = A + jnp.diag(diag)
+    A = jnp.tril(Z, k=-1) + jnp.diag(jnp.sqrt(chi2))
 
-    # Wishart sample
-    LA = L @ A
-    W = LA @ LA.T
-
-    return fast_inverse_cov(W, stabilizer)
+    # note L @ A is the Cholesky decomp. of a Wishart sample
+    # directly invert without reconstructing W
+    return jsp.linalg.cho_solve((L @ A, True), jnp.eye(d))
 
 
-@partial(jax.jit, static_argnames=['pm', 'pcov', 'pnu', 'pPsi', 'stabilizer'])
-def gibbs_step(key, X_train, Kn_inv, pm, pcov, pPsi, pnu, Kn,
-               stabilizer=1e-8):
+@partial(jax.jit, static_argnames=['p_m_cov', 'pnu', 'pPsi', 'stabilizer'])
+def gibbs_step(key, X_train, Sigma_0, p_m_cov, pPsi, pnu, stabilizer=1e-8):
     '''
     key: jax.random key
     cov_stabilizer: if cholesky decomp fails due to numerical issues, add diagonal matrix with cov_stabilizer
         multiply stabilizer by 10 until cholesky decomposition works
     '''
-    key_f, key_W = jr.split(jr.PRNGKey(key))
+    key_f, key_W = jr.split(key)
 
-    m_post = pm(X_train, Kn_inv)
-    cov_post = pcov(X_train, Kn_inv)
-
+    m_post, cov_post = p_m_cov(X_train, Sigma_0)
     sqrtCov = stable_cholesky(cov_post, stabilizer)
     f_hat = sqrtCov @ jr.normal(key_f, shape=m_post.shape) + m_post
 
     Psi_post = pPsi(f_hat)
     Sigma_0 = sample_inv_wishart(key_W, Psi_post, pnu, stabilizer)
 
-    Kn_inv = update_f(Sigma_0, Kn, stabilizer)
-    return f_hat, Sigma_0, Kn_inv
+    return f_hat, Sigma_0
 
 class GaussianProcess():
     def __init__(self, m, K, cov_stabilizer=1e-8):
@@ -119,39 +100,43 @@ class GaussianProcess():
         nu_0 : float -> Sigma_0 prior degrees of freedom
         '''
         if Sigma_0 is None:
-            Sigma_0 = jnp.eye(X_train.shape[0]) * jnp.var(y_train)
+            Sigma_0 = jnp.eye(X_train.shape[0]) * 1e-3 #jnp.var(y_train)
         self.Sigma_0 = Sigma_0
 
         self.X_train = X_train
         self.y_train = y_train
         self.n, self.d = X_train.shape
 
-        if Psi_0 is None: Psi_0 = jnp.eye(self.n) * 1e-3
-        if nu_0 is None: nu_0 = self.d + 1
+        self.mn = self.m(self.X_train)
+        self.Kn = self.K(self.X_train, self.X_train)
+
+        if nu_0 is None: nu_0 = self.n + 2
+        if Psi_0 is None: Psi_0 = jnp.eye(self.n) * 1e-3 #jnp.var(y_train) * (nu_0 - self.n - 1)
+
         self.Psi_0 = Psi_0
         self.nu_0 = nu_0
 
         @jax.jit
-        def posterior_mean(X_new, Kn_inv):
-            return self.m(X_new) + self.K(X_new, self.X_train) @ Kn_inv @ (self.y_train - self.mn)
+        def posterior_mean_cov(X_new, Sigma_0):
+            L = stable_cholesky(self.Kn + Sigma_0, self.cov_stabilizer)
+            Kn_new = self.K(self.X_train, X_new)
 
-        @jax.jit
-        def posterior_cov(X_new, Kn_inv):
-            return self.K(X_new, X_new) - self.K(X_new, self.X_train) @ Kn_inv @ self.K(self.X_train, X_new)
+            A = jsp.linalg.cho_solve((L, True), self.y_train - self.mn)
+            m_post = self.m(X_new) + Kn_new.T @ A
+
+            V = jsp.linalg.solve_triangular(L, Kn_new, lower=True)
+            cov_post = self.K(X_new, X_new) - V.T @ V
+
+            return m_post, cov_post
 
         @jax.jit
         def posterior_Psi(f_hat):
             Psi = self.Psi_0 + (self.y_train - f_hat)[:,None] @ (self.y_train - f_hat)[None,:]
             return Psi
 
-        self.posterior_mean = posterior_mean
-        self.posterior_cov = posterior_cov
+        self.posterior_mean_cov = posterior_mean_cov
         self.posterior_Psi = posterior_Psi
         self.nu_n = self.nu_0 + self.n
-        self.mn = self.m(self.X_train)
-        self.Kn = self.K(self.X_train, self.X_train)
-
-        self.Kn_inv = update_f(self.Sigma_0, self.Kn, self.cov_stabilizer)
 
         self.trained = True
 
@@ -161,13 +146,13 @@ class GaussianProcess():
         cov_stabilizer: if cholesky decomp fails due to numerical issues, add diagonal matrix with cov_stabilizer
             multiply stabilizer by 10 until cholesky decomposition works
         '''
-        f_hat, Sigma_0, Kn_inv = gibbs_step(key,
-            self.X_train, self.Kn_inv, self.posterior_mean, self.posterior_cov,
-            self.posterior_Psi, self.nu_n, self.Kn, self.cov_stabilizer)
-
+        new_key, gibbs_key = jr.split(key)
+        f_hat, Sigma_0 = gibbs_step(gibbs_key,
+            self.X_train, self.Sigma_0, self.posterior_mean_cov,
+            self.posterior_Psi, self.nu_n, self.cov_stabilizer)
         self.f_hat = f_hat
         self.Sigma_0 = Sigma_0
-        self.Kn_inv = Kn_inv
+        return new_key
 
     def predict(self, X_new, candidates=None):
         '''
@@ -190,9 +175,9 @@ class GaussianProcess():
             candidates_tile = jnp.tile(candidates, (n,1))
 
             X_new_filled = X_new_rep.at[:,-k:].set(candidates_tile)
-            scores = self.posterior_mean(X_new_filled, self.Kn_inv).reshape(n, m)
+            scores, _ = self.posterior_mean_cov(X_new_filled, self.Sigma_0).reshape(n, m)
 
             best_candidates =  candidates[jnp.argmax(scores, axis=1)]
             X_new = X_new.at[:,-k:].set(best_candidates)
 
-        return X_new, self.posterior_mean(X_new, self.Kn_inv), self.posterior_cov(X_new, self.Kn_inv)
+        return X_new, *self.posterior_mean_cov(X_new, self.Sigma_0)
