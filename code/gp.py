@@ -5,38 +5,58 @@ import jax.random as jr
 from functools import partial
 from sklearn.exceptions import NotFittedError
 
-def stable_cholesky(M):
+
+@partial(jax.jit, static_argnames=['stabilizer'])
+def stable_cholesky(M, stabilizer=1e-8):
     '''
     Numerically stable Cholesky decomposition
     '''
-    return jnp.linalg.cholesky(0.5 * (M + M.T))
+    M = 0.5 * (M + M.T)
 
-def fast_inverse_cov(M):
+    def has_nan(state):
+        _, chol = state
+        return jnp.any(jnp.isnan(chol))
+
+    def recompute(state):
+        stabilizer, _ = state
+        stabilizer = stabilizer * 10
+        chol = jnp.linalg.cholesky(M + jnp.eye(M.shape[0]) * stabilizer)
+        return stabilizer, chol
+
+    valid_stabilizer, chol = jax.lax.while_loop(has_nan, recompute, (stabilizer, jnp.full(M.shape, jnp.nan)))
+    return chol
+
+
+@partial(jax.jit, static_argnames=['stabilizer'])
+def fast_inverse_cov(M, stabilizer=1e-8):
     '''
     Faster inverse of a positive semi-definite matrix
     '''
-    L = stable_cholesky(M)
+    L = stable_cholesky(M, stabilizer)
     return jsp.linalg.cho_solve((L, True), jnp.eye(M.shape[0]))
 
-@partial(jax.jit, static_argnames=['n', 'm', 'K'])
-def precomputes(X_train, Sigma_0, n, m, K):
-    mn = m(X_train)
-    Kn = K(X_train, X_train)
-    Kn_inv = fast_inverse_cov(Kn + Sigma_0)
-    return mn, Kn, Kn_inv
 
-@partial(jax.jit, static_argnames=['d'])
-def sample_inv_wishart(key, Psi, nu, d):
+@partial(jax.jit, static_argnames=['stabilizer'])
+def update_f(Sigma_0, Kn, stabilizer=1e-8):
+    '''
+    Compute a Gibbs update for f, given Sigma_0.
+    '''
+    Kn_inv = fast_inverse_cov(Kn + Sigma_0, stabilizer)
+    return Kn_inv
+
+
+@partial(jax.jit, static_argnames=['stabilizer'])
+def sample_inv_wishart(key, Psi, nu, stabilizer=1e-8):
     '''
     Samples from Inv-Wishart(Psi, nu).
     If W ~ Wishart(Psi^{-1}, nu), then W^{-1} Inv-Wishart(Psi, nu).
     '''
-    p = Psi.shape[0]
+    d = Psi.shape[0]
     key_chi, key_norm = jr.split(key)
 
     # sample wishart
-    Psi_inv = fast_inverse_cov(Psi)
-    L = stable_cholesky(Psi_inv)
+    Psi_inv = fast_inverse_cov(Psi, stabilizer)
+    L = stable_cholesky(Psi_inv, stabilizer)
     # Bartlett decomposition
     # Diagonal: sqrt chi-square
     chi2 = jr.chisquare(key_chi, df=nu - jnp.arange(d))
@@ -52,16 +72,40 @@ def sample_inv_wishart(key, Psi, nu, d):
     LA = L @ A
     W = LA @ LA.T
 
-    return fast_inverse_cov(W)
+    return fast_inverse_cov(W, stabilizer)
+
+
+@partial(jax.jit, static_argnames=['pm', 'pcov', 'pnu', 'pPsi', 'stabilizer'])
+def gibbs_step(key, X_train, Kn_inv, pm, pcov, pPsi, pnu, Kn,
+               stabilizer=1e-8):
+    '''
+    key: jax.random key
+    cov_stabilizer: if cholesky decomp fails due to numerical issues, add diagonal matrix with cov_stabilizer
+        multiply stabilizer by 10 until cholesky decomposition works
+    '''
+    key_f, key_W = jr.split(jr.PRNGKey(key))
+
+    m_post = pm(X_train, Kn_inv)
+    cov_post = pcov(X_train, Kn_inv)
+
+    sqrtCov = stable_cholesky(cov_post, stabilizer)
+    f_hat = sqrtCov @ jr.normal(key_f, shape=m_post.shape) + m_post
+
+    Psi_post = pPsi(f_hat)
+    Sigma_0 = sample_inv_wishart(key_W, Psi_post, pnu, stabilizer)
+
+    Kn_inv = update_f(Sigma_0, Kn, stabilizer)
+    return f_hat, Sigma_0, Kn_inv
 
 class GaussianProcess():
-    def __init__(self, m, K):
+    def __init__(self, m, K, cov_stabilizer=1e-8):
         '''
         m : x_i -> mean
         K : x_i, x_j-> cov
         '''
         self.m = jax.jit(jax.vmap(m))
         self.K = jax.jit(jax.vmap(jax.vmap(K, in_axes=(None, 0)), in_axes=(0, None)))
+        self.cov_stabilizer = cov_stabilizer
 
         self.trained = False
 
@@ -87,55 +131,43 @@ class GaussianProcess():
         self.Psi_0 = Psi_0
         self.nu_0 = nu_0
 
-        self.update_f()
+        @jax.jit
+        def posterior_mean(X_new, Kn_inv):
+            return self.m(X_new) + self.K(X_new, self.X_train) @ Kn_inv @ (self.y_train - self.mn)
 
-        self.trained = True
+        @jax.jit
+        def posterior_cov(X_new, Kn_inv):
+            return self.K(X_new, X_new) - self.K(X_new, self.X_train) @ Kn_inv @ self.K(self.X_train, X_new)
 
-    def update_f(self, use_mean_Cov_0=False):
-        '''
-        Compute a Gibbs update for f, given Sigma_0. Sets the posterior mean and covariance functions for the MVN distribution.
-        '''
-        if use_mean_Cov_0: self.Sigma_0 = self.posterior_mean_Sigma_0
-        self.mn, self.Kn, self.Kn_inv = precomputes(self.X_train, self.Sigma_0, self.n, self.m, self.K)
-
-        def posterior_mean(X_new):
-            return self.m(X_new) + self.K(X_new, self.X_train) @ self.Kn_inv @ (self.y_train - self.mn)
-        def posterior_cov(X_new):
-            return self.K(X_new, X_new) - self.K(X_new, self.X_train) @ self.Kn_inv @ self.K(self.X_train, X_new)
+        @jax.jit
+        def posterior_Psi(f_hat):
+            Psi = self.Psi_0 + (self.y_train - f_hat)[:,None] @ (self.y_train - f_hat)[None,:]
+            return Psi
 
         self.posterior_mean = posterior_mean
         self.posterior_cov = posterior_cov
+        self.posterior_Psi = posterior_Psi
+        self.nu_n = self.nu_0 + self.n
+        self.mn = self.m(self.X_train)
+        self.Kn = self.K(self.X_train, self.X_train)
 
-    def update_Sigma(self):
-        '''
-        Compute a Gibbs update for Sigma_0, given f. Sets a posterior scale and df for Inv-Wishart distribution.
-        '''
-        if not self.trained:
-            raise NotFittedError("This Gaussian Process instance has not been fitted.")
-        self.posterior_Psi = self.Psi_0 + (self.y_train - self.f_hat)[:,None] @ (self.y_train - self.f_hat)[None,:]
-        self.posterior_nu = self.nu_0 + self.n
-        self.posterior_mean_Sigma_0 = self.posterior_Psi / (self.posterior_nu - self.n - 1)
+        self.Kn_inv = update_f(self.Sigma_0, self.Kn, self.cov_stabilizer)
 
-    def gibbs_step(self, key, cov_stabilizer=1e-8):
+        self.trained = True
+
+    def gibbs(self, key):
         '''
         key: jax.random key
         cov_stabilizer: if cholesky decomp fails due to numerical issues, add diagonal matrix with cov_stabilizer
             multiply stabilizer by 10 until cholesky decomposition works
         '''
-        key_f, key_W = jr.split(jr.PRNGKey(key))
+        f_hat, Sigma_0, Kn_inv = gibbs_step(key,
+            self.X_train, self.Kn_inv, self.posterior_mean, self.posterior_cov,
+            self.posterior_Psi, self.nu_n, self.Kn, self.cov_stabilizer)
 
-        m_post = self.posterior_mean(self.X_train)
-        cov_post = self.posterior_cov(self.X_train)
-        sqrtCov = stable_cholesky(cov_post)
-        while jnp.any(jnp.isnan(sqrtCov)):
-            sqrtCov = stable_cholesky(cov_post + jnp.eye(cov_post.shape[0]) * cov_stabilizer)
-            cov_stabilizer *= 10
-        self.f_hat = sqrtCov @ jr.normal(key_f, shape=self.n) + m_post
-
-        self.update_Sigma()
-        self.Sigma_0 = sample_inv_wishart(key_W, self.posterior_Psi, self.posterior_nu, self.n)
-
-        self.update_f()
+        self.f_hat = f_hat
+        self.Sigma_0 = Sigma_0
+        self.Kn_inv = Kn_inv
 
     def predict(self, X_new, candidates=None):
         '''
@@ -158,9 +190,9 @@ class GaussianProcess():
             candidates_tile = jnp.tile(candidates, (n,1))
 
             X_new_filled = X_new_rep.at[:,-k:].set(candidates_tile)
-            scores = self.posterior_mean(X_new_filled).reshape(n, m)
+            scores = self.posterior_mean(X_new_filled, self.Kn_inv).reshape(n, m)
 
             best_candidates =  candidates[jnp.argmax(scores, axis=1)]
             X_new = X_new.at[:,-k:].set(best_candidates)
 
-        return X_new, self.posterior_mean(X_new), self.posterior_cov(X_new)
+        return X_new, self.posterior_mean(X_new, self.Kn_inv), self.posterior_cov(X_new, self.Kn_inv)
