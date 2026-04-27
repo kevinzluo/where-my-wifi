@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-Interactive macOS Wi-Fi/location logger for campus surveys.
+Timed macOS Wi-Fi logger for campus surveys.
 
 What it does
 - Logs one CSV row per `wdutil info` poll.
 - Groups related rows with a shared `measurement_set_id`.
 - Writes raw command output to JSONL and pretty JSON files for audit/debugging.
-- Supports indoor/outdoor, building/floor/waypoint metadata.
+- Supports indoor/outdoor, building, and floor metadata.
 - Supports optional wifi-unredactor for SSID/BSSID on newer macOS versions.
-- Prompts for an optional phone-based location paste after each measurement set.
 - Automatically migrates older CSV schemas forward and fills newly added columns with
   the literal string "null" so future schema changes do not break appends.
+- Runs continuously on a timer until paused or quit.
+
+Notes
+- CoreLocation is intentionally not used.
+- Run `sudo -v` once before starting.
+- The script uses `sudo -n wdutil info` and a keepalive thread to reduce sudo expiry.
 """
 
 from __future__ import annotations
@@ -22,14 +27,13 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-# ---------- output files ----------
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 CSV_FILE = Path("data/wifi_samples.csv")
 RAW_JSONL_FILE = Path("data/wifi_raw.jsonl")
@@ -38,6 +42,7 @@ CSV_NULL = "null"
 
 CSV_FIELDS = [
     "measurement_set_id",
+    "measurement_set_sequence",
     "measurement_set_timestamp_utc",
     "sample_index",
     "sample_timestamp_utc",
@@ -46,23 +51,9 @@ CSV_FIELDS = [
     "environment",
     "building",
     "floor",
-    "waypoint_id",
-    "notes",
+    "capture_interval_seconds_config",
     "wdutil_samples_config",
     "wdutil_delay_seconds_config",
-    "corelocation_query_failed",
-    "mac_location_timestamp",
-    "mac_latitude",
-    "mac_longitude",
-    "mac_h_accuracy_m",
-    "phone_measurement_raw",
-    "phone_measurement_provided",
-    "phone_measurement_parse_ok",
-    "phone_measurement_parse_error",
-    "phone_location_timestamp",
-    "phone_latitude",
-    "phone_longitude",
-    "phone_altitude_m",
     "unredactor_found",
     "unredactor_parse_error",
     "unredactor_ssid",
@@ -84,14 +75,50 @@ CSV_FIELDS = [
     "raw_measurement_json_path",
 ]
 
+DEFAULT_CAPTURE_INTERVAL_SECONDS = 10.0
 DEFAULT_WDUTIL_SAMPLES = 3
 DEFAULT_WDUTIL_DELAY_SECONDS = 1.0
-DEFAULT_CORELOCATION_TIMEOUT_SECONDS = 30
 DEFAULT_WDUTIL_TIMEOUT_SECONDS = 30
 DEFAULT_UNREDACTOR_TIMEOUT_SECONDS = 20
+DEFAULT_SUDO_KEEPALIVE_SECONDS = 60
 
+_WDUTIL_LABELS = [
+    "SSID",
+    "BSSID",
+    "RSSI",
+    "Noise",
+    "Tx Rate",
+    "Channel",
+    "MAC Address",
+    "Security",
+    "PHY Mode",
+    "MCS Index",
+    "NSS",
+    "CCA",
+]
 
-# ---------- helpers ----------
+EMPTY_WDUTIL_PARSED = {
+    "ssid": "",
+    "bssid": "",
+    "rssi_dbm": "",
+    "noise_dbm": "",
+    "tx_rate": "",
+    "channel": "",
+    "mac_address": "",
+    "security": "",
+    "phy_mode": "",
+    "mcs_index": "",
+    "nss": "",
+    "cca": "",
+}
+
+EMPTY_WIFI_UNREDACTOR_PARSED = {
+    "ssid": "",
+    "bssid": "",
+    "interface": "",
+    "raw_json": None,
+}
+
 
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -100,13 +127,6 @@ def now_utc_iso() -> str:
 def make_backup_path(path: Path) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return path.with_suffix(path.suffix + f".bak.{stamp}")
-
-
-def to_float(value: Any) -> Optional[float]:
-    try:
-        return float(str(value).strip())
-    except Exception:
-        return None
 
 
 def normalize_csv_cell(value: Any) -> Any:
@@ -128,6 +148,20 @@ def prompt_with_default(label: str, default: str = "") -> str:
     shown = f"{label} [{default}]" if default else label
     value = input(f"{shown}: ").strip()
     return value if value else default
+
+
+def parse_float_with_default(raw: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(raw))
+    except Exception:
+        return default
+
+
+def parse_int_with_default(raw: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(raw))
+    except Exception:
+        return default
 
 
 def run_command(cmd: List[str], timeout: int) -> Dict[str, Any]:
@@ -173,8 +207,6 @@ def find_wifi_unredactor() -> Optional[str]:
             return path
     return None
 
-
-# ---------- CSV schema compatibility ----------
 
 def read_existing_csv() -> Tuple[List[str], List[Dict[str, Any]]]:
     with CSV_FILE.open("r", newline="", encoding="utf-8") as f:
@@ -241,8 +273,6 @@ def append_csv_row(row: Dict[str, Any]) -> None:
         writer.writerow({field: normalize_csv_cell(row.get(field, CSV_NULL)) for field in actual_fields})
 
 
-# ---------- raw logging ----------
-
 def append_raw_record(record: Dict[str, Any]) -> None:
     with RAW_JSONL_FILE.open("a", encoding="utf-8") as f:
         f.write(json_dumps(record) + "\n")
@@ -256,29 +286,11 @@ def write_pretty_raw_record(measurement_set_id: str, record: Dict[str, Any]) -> 
     return path
 
 
-# ---------- parsers ----------
-
-_WDUTIL_LABELS = [
-    "SSID",
-    "BSSID",
-    "RSSI",
-    "Noise",
-    "Tx Rate",
-    "Channel",
-    "MAC Address",
-    "Security",
-    "PHY Mode",
-    "MCS Index",
-    "NSS",
-    "CCA",
-]
-
-
 def parse_wdutil_info(text: str) -> Dict[str, Any]:
     parsed: Dict[str, Any] = {}
     for label in _WDUTIL_LABELS:
-        match = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.+)$", text, re.MULTILINE)
-        parsed[label] = match.group(1).strip() if match else ""
+        m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.+)$", text, re.MULTILINE)
+        parsed[label] = m.group(1).strip() if m else ""
 
     return {
         "ssid": parsed.get("SSID", ""),
@@ -296,101 +308,20 @@ def parse_wdutil_info(text: str) -> Dict[str, Any]:
     }
 
 
-def parse_corelocation_json(text: str) -> Tuple[Dict[str, Any], Optional[str]]:
-    try:
-        data = json.loads(text)
-        return {
-            "mac_location_timestamp": data.get("time", CSV_NULL),
-            "mac_latitude": data.get("latitude", CSV_NULL),
-            "mac_longitude": data.get("longitude", CSV_NULL),
-            "mac_h_accuracy_m": data.get("h_accuracy", CSV_NULL),
-            "raw_json": data,
-        }, None
-    except Exception as exc:
-        return {
-            "mac_location_timestamp": CSV_NULL,
-            "mac_latitude": CSV_NULL,
-            "mac_longitude": CSV_NULL,
-            "mac_h_accuracy_m": CSV_NULL,
-            "raw_json": None,
-        }, repr(exc)
-
-
 def parse_wifi_unredactor_json(text: str) -> Tuple[Dict[str, Any], Optional[str]]:
     try:
         data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError(f"expected JSON object, got {type(data).__name__}")
         return {
-            "unredactor_ssid": data.get("ssid", CSV_NULL),
-            "unredactor_bssid": data.get("bssid", CSV_NULL),
-            "unredactor_interface": data.get("interface", CSV_NULL),
+            "ssid": data.get("ssid", ""),
+            "bssid": data.get("bssid", ""),
+            "interface": data.get("interface", ""),
             "raw_json": data,
         }, None
     except Exception as exc:
-        return {
-            "unredactor_ssid": CSV_NULL,
-            "unredactor_bssid": CSV_NULL,
-            "unredactor_interface": CSV_NULL,
-            "raw_json": None,
-        }, repr(exc)
+        return dict(EMPTY_WIFI_UNREDACTOR_PARSED), repr(exc)
 
-
-def parse_phone_measurement(text: str) -> Dict[str, Any]:
-    raw = text.strip()
-    if not raw:
-        return {
-            "phone_measurement_raw": CSV_NULL,
-            "phone_measurement_provided": False,
-            "phone_measurement_parse_ok": CSV_NULL,
-            "phone_measurement_parse_error": CSV_NULL,
-            "phone_location_timestamp": CSV_NULL,
-            "phone_latitude": CSV_NULL,
-            "phone_longitude": CSV_NULL,
-            "phone_altitude_m": CSV_NULL,
-        }
-
-    out = {
-        "phone_measurement_raw": raw,
-        "phone_measurement_provided": True,
-        "phone_measurement_parse_ok": False,
-        "phone_measurement_parse_error": CSV_NULL,
-        "phone_location_timestamp": CSV_NULL,
-        "phone_latitude": CSV_NULL,
-        "phone_longitude": CSV_NULL,
-        "phone_altitude_m": CSV_NULL,
-    }
-
-    parts = [part.strip() for part in raw.split(",")]
-    if len(parts) != 4:
-        out["phone_measurement_parse_error"] = f"expected 4 comma-separated fields, got {len(parts)}"
-        return out
-
-    ts, lat, lon, alt = parts
-
-    try:
-        datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        out["phone_measurement_parse_error"] = "invalid ISO8601 timestamp"
-        return out
-
-    lat_f = to_float(lat)
-    lon_f = to_float(lon)
-    alt_f = to_float(alt)
-    if lat_f is None or lon_f is None or alt_f is None:
-        out["phone_measurement_parse_error"] = "lat/lon/altitude must be numeric"
-        return out
-
-    out.update({
-        "phone_measurement_parse_ok": True,
-        "phone_measurement_parse_error": CSV_NULL,
-        "phone_location_timestamp": ts,
-        "phone_latitude": lat_f,
-        "phone_longitude": lon_f,
-        "phone_altitude_m": alt_f,
-    })
-    return out
-
-
-# ---------- capture state ----------
 
 @dataclass
 class SurveyState:
@@ -399,33 +330,24 @@ class SurveyState:
     environment: str = "indoor"
     building: str = ""
     floor: str = ""
+    capture_interval_seconds: float = DEFAULT_CAPTURE_INTERVAL_SECONDS
     wdutil_samples: int = DEFAULT_WDUTIL_SAMPLES
     wdutil_delay_seconds: float = DEFAULT_WDUTIL_DELAY_SECONDS
 
 
-# ---------- measurement collection ----------
+class StateStore:
+    def __init__(self, initial_state: SurveyState) -> None:
+        self._lock = threading.Lock()
+        self._state = initial_state
 
-def get_mac_location() -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    res = run_command(["CoreLocationCLI", "--json"], timeout=DEFAULT_CORELOCATION_TIMEOUT_SECONDS)
-    if res["ok"]:
-        parsed, parse_error = parse_corelocation_json(res["stdout"])
-        corelocation_query_failed = parse_error is not None
-    else:
-        parsed = {
-            "mac_location_timestamp": CSV_NULL,
-            "mac_latitude": CSV_NULL,
-            "mac_longitude": CSV_NULL,
-            "mac_h_accuracy_m": CSV_NULL,
-            "raw_json": None,
-        }
-        parse_error = "command_failed"
-        corelocation_query_failed = True
+    def snapshot(self) -> SurveyState:
+        with self._lock:
+            return replace(self._state)
 
-    return parsed, {
-        "command": res,
-        "parse_error": parse_error,
-        "corelocation_query_failed": corelocation_query_failed,
-    }
+    def update(self, updater: Callable[[SurveyState], None]) -> SurveyState:
+        with self._lock:
+            updater(self._state)
+            return replace(self._state)
 
 
 def get_wifi_unredacted() -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -435,293 +357,403 @@ def get_wifi_unredacted() -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, 
 
     res = run_command([path], timeout=DEFAULT_UNREDACTOR_TIMEOUT_SECONDS)
     if not res["ok"]:
-        return None, {
-            "command": res,
-            "parse_error": "command_failed",
-        }
+        return None, {"command": res, "parse_error": "command_failed"}
 
     parsed, parse_error = parse_wifi_unredactor_json(res["stdout"])
-    return parsed, {
-        "command": res,
-        "parse_error": parse_error,
-    }
+    return parsed, {"command": res, "parse_error": parse_error}
 
 
-def get_wdutil_samples(sample_count: int, delay_seconds: float) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    parsed_samples: List[Dict[str, Any]] = []
+def get_wdutil_samples(sample_count: int, delay_seconds: float) -> List[Dict[str, Any]]:
     audit_samples: List[Dict[str, Any]] = []
 
-    for sample_index in range(sample_count):
-        res = run_command(["sudo", "wdutil", "info"], timeout=DEFAULT_WDUTIL_TIMEOUT_SECONDS)
-        if res["ok"]:
-            parsed = parse_wdutil_info(res["stdout"])
-        else:
-            parsed = {
-                "ssid": CSV_NULL,
-                "bssid": CSV_NULL,
-                "rssi_dbm": CSV_NULL,
-                "noise_dbm": CSV_NULL,
-                "tx_rate": CSV_NULL,
-                "channel": CSV_NULL,
-                "mac_address": CSV_NULL,
-                "security": CSV_NULL,
-                "phy_mode": CSV_NULL,
-                "mcs_index": CSV_NULL,
-                "nss": CSV_NULL,
-                "cca": CSV_NULL,
-            }
-
-        parsed_samples.append(parsed)
+    for idx in range(sample_count):
+        res = run_command(["sudo", "-n", "wdutil", "info"], timeout=DEFAULT_WDUTIL_TIMEOUT_SECONDS)
+        parsed = parse_wdutil_info(res["stdout"]) if res["ok"] else dict(EMPTY_WDUTIL_PARSED)
         audit_samples.append({
-            "sample_index": sample_index,
+            "sample_index": idx,
             "command": res,
             "parsed": parsed,
         })
-
-        if sample_index != sample_count - 1:
+        if idx != sample_count - 1:
             time.sleep(delay_seconds)
 
-    return parsed_samples, audit_samples
+    return audit_samples
 
 
-def capture_once(state: SurveyState, waypoint_id: str, notes: str) -> Dict[str, Any]:
-    measurement_set_id = str(uuid.uuid4())
-    measurement_set_timestamp = now_utc_iso()
+def build_csv_rows(
+    measurement_set_id: str,
+    measurement_set_sequence: int,
+    measurement_set_timestamp_utc: str,
+    state: SurveyState,
+    wifi_unredacted_parsed: Optional[Dict[str, Any]],
+    wifi_unredacted_audit: Optional[Dict[str, Any]],
+    wdutil_audit_samples: List[Dict[str, Any]],
+    raw_measurement_json_path: str,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    unredactor_found = wifi_unredacted_parsed is not None or wifi_unredacted_audit is not None
+    unredactor_parse_error = ""
+    if wifi_unredacted_audit is not None:
+        unredactor_parse_error = wifi_unredacted_audit.get("parse_error") or ""
 
-    mac_location_parsed, mac_location_audit = get_mac_location()
+    for sample_audit in wdutil_audit_samples:
+        command = sample_audit.get("command") or {}
+        parsed = sample_audit.get("parsed") or {}
+        rows.append({
+            "measurement_set_id": measurement_set_id,
+            "measurement_set_sequence": measurement_set_sequence,
+            "measurement_set_timestamp_utc": measurement_set_timestamp_utc,
+            "sample_index": sample_audit.get("sample_index", ""),
+            "sample_timestamp_utc": command.get("started_utc", ""),
+            "collector_id": state.collector_id,
+            "device_name": state.device_name,
+            "environment": state.environment,
+            "building": state.building,
+            "floor": state.floor,
+            "capture_interval_seconds_config": state.capture_interval_seconds,
+            "wdutil_samples_config": state.wdutil_samples,
+            "wdutil_delay_seconds_config": state.wdutil_delay_seconds,
+            "unredactor_found": unredactor_found,
+            "unredactor_parse_error": unredactor_parse_error,
+            "unredactor_ssid": (wifi_unredacted_parsed or {}).get("ssid", ""),
+            "unredactor_bssid": (wifi_unredacted_parsed or {}).get("bssid", ""),
+            "unredactor_interface": (wifi_unredacted_parsed or {}).get("interface", ""),
+            "wdutil_ssid": parsed.get("ssid", ""),
+            "wdutil_bssid": parsed.get("bssid", ""),
+            "wdutil_rssi_dbm": parsed.get("rssi_dbm", ""),
+            "wdutil_noise_dbm": parsed.get("noise_dbm", ""),
+            "wdutil_tx_rate": parsed.get("tx_rate", ""),
+            "wdutil_channel": parsed.get("channel", ""),
+            "wdutil_mac_address": parsed.get("mac_address", ""),
+            "wdutil_security": parsed.get("security", ""),
+            "wdutil_phy_mode": parsed.get("phy_mode", ""),
+            "wdutil_mcs_index": parsed.get("mcs_index", ""),
+            "wdutil_nss": parsed.get("nss", ""),
+            "wdutil_cca": parsed.get("cca", ""),
+            "raw_measurement_json_path": raw_measurement_json_path,
+        })
+
+    return rows
+
+
+def capture_measurement_set(state: SurveyState, measurement_set_sequence: int) -> Dict[str, Any]:
+    measurement_set_id = uuid.uuid4().hex[:12]
+    measurement_set_timestamp_utc = now_utc_iso()
+
     wifi_unredacted_parsed, wifi_unredacted_audit = get_wifi_unredacted()
-    wdutil_parsed_samples, wdutil_audit_samples = get_wdutil_samples(
+    wdutil_audit_samples = get_wdutil_samples(
         sample_count=state.wdutil_samples,
         delay_seconds=state.wdutil_delay_seconds,
     )
 
-    corelocation_failed_default = "YES" if mac_location_audit["corelocation_query_failed"] else "NO"
-    phone_prompt = f"phone based measurement [corelocation failed: {corelocation_failed_default}]"
-    phone_raw = input(phone_prompt + " (paste ISO,lat,lon,altitude or leave blank): ").strip()
-    phone_parsed = parse_phone_measurement(phone_raw)
-
     raw_record = {
         "measurement_set_id": measurement_set_id,
-        "measurement_set_timestamp_utc": measurement_set_timestamp,
-        "meta": {
+        "measurement_set_sequence": measurement_set_sequence,
+        "measurement_set_started_utc": measurement_set_timestamp_utc,
+        "measurement_set_finished_utc": now_utc_iso(),
+        "state_snapshot": {
             "collector_id": state.collector_id,
             "device_name": state.device_name,
             "environment": state.environment,
             "building": state.building,
             "floor": state.floor,
-            "waypoint_id": waypoint_id,
-            "notes": notes,
+            "capture_interval_seconds": state.capture_interval_seconds,
             "wdutil_samples": state.wdutil_samples,
             "wdutil_delay_seconds": state.wdutil_delay_seconds,
         },
-        "parsed_summary": {
-            "corelocation_query_failed": mac_location_audit["corelocation_query_failed"],
-            **{k: v for k, v in mac_location_parsed.items() if k != "raw_json"},
-            **phone_parsed,
-            **(wifi_unredacted_parsed or {
-                "unredactor_ssid": CSV_NULL,
-                "unredactor_bssid": CSV_NULL,
-                "unredactor_interface": CSV_NULL,
-            }),
+        "wifi_unredactor": {
+            "found": wifi_unredacted_parsed is not None or wifi_unredacted_audit is not None,
+            "parsed": wifi_unredacted_parsed,
+            "audit": wifi_unredacted_audit,
         },
-        "raw": {
-            "corelocationcli": mac_location_audit,
-            "wifi_unredactor": wifi_unredacted_audit,
-            "wdutil_info_samples": wdutil_audit_samples,
-            "phone_measurement_raw": phone_raw or None,
-        },
+        "wdutil_samples": wdutil_audit_samples,
     }
 
-    raw_measurement_json_path = write_pretty_raw_record(measurement_set_id, raw_record)
+    pretty_path = write_pretty_raw_record(measurement_set_id, raw_record)
     append_raw_record(raw_record)
 
-    rows_written = 0
-    for audit_sample in wdutil_audit_samples:
-        parsed = audit_sample["parsed"]
-        row = {
-            "measurement_set_id": measurement_set_id,
-            "measurement_set_timestamp_utc": measurement_set_timestamp,
-            "sample_index": audit_sample["sample_index"],
-            "sample_timestamp_utc": audit_sample["command"].get("started_utc", CSV_NULL),
-            "collector_id": state.collector_id,
-            "device_name": state.device_name,
-            "environment": state.environment,
-            "building": state.building,
-            "floor": state.floor,
-            "waypoint_id": waypoint_id,
-            "notes": notes,
-            "wdutil_samples_config": state.wdutil_samples,
-            "wdutil_delay_seconds_config": state.wdutil_delay_seconds,
-            "corelocation_query_failed": mac_location_audit["corelocation_query_failed"],
-            "mac_location_timestamp": mac_location_parsed.get("mac_location_timestamp", CSV_NULL),
-            "mac_latitude": mac_location_parsed.get("mac_latitude", CSV_NULL),
-            "mac_longitude": mac_location_parsed.get("mac_longitude", CSV_NULL),
-            "mac_h_accuracy_m": mac_location_parsed.get("mac_h_accuracy_m", CSV_NULL),
-            **phone_parsed,
-            "unredactor_found": wifi_unredacted_audit is not None,
-            "unredactor_parse_error": (
-                CSV_NULL
-                if wifi_unredacted_audit is None
-                else wifi_unredacted_audit.get("parse_error") or CSV_NULL
-            ),
-            "unredactor_ssid": (
-                (wifi_unredacted_parsed or {}).get("unredactor_ssid", CSV_NULL)
-            ),
-            "unredactor_bssid": (
-                (wifi_unredacted_parsed or {}).get("unredactor_bssid", CSV_NULL)
-            ),
-            "unredactor_interface": (
-                (wifi_unredacted_parsed or {}).get("unredactor_interface", CSV_NULL)
-            ),
-            "wdutil_ssid": parsed.get("ssid", CSV_NULL),
-            "wdutil_bssid": parsed.get("bssid", CSV_NULL),
-            "wdutil_rssi_dbm": parsed.get("rssi_dbm", CSV_NULL),
-            "wdutil_noise_dbm": parsed.get("noise_dbm", CSV_NULL),
-            "wdutil_tx_rate": parsed.get("tx_rate", CSV_NULL),
-            "wdutil_channel": parsed.get("channel", CSV_NULL),
-            "wdutil_mac_address": parsed.get("mac_address", CSV_NULL),
-            "wdutil_security": parsed.get("security", CSV_NULL),
-            "wdutil_phy_mode": parsed.get("phy_mode", CSV_NULL),
-            "wdutil_mcs_index": parsed.get("mcs_index", CSV_NULL),
-            "wdutil_nss": parsed.get("nss", CSV_NULL),
-            "wdutil_cca": parsed.get("cca", CSV_NULL),
-            "legacy_extra_columns_json": CSV_NULL,
-            "raw_measurement_json_path": str(raw_measurement_json_path),
-        }
+    rows = build_csv_rows(
+        measurement_set_id=measurement_set_id,
+        measurement_set_sequence=measurement_set_sequence,
+        measurement_set_timestamp_utc=measurement_set_timestamp_utc,
+        state=state,
+        wifi_unredacted_parsed=wifi_unredacted_parsed,
+        wifi_unredacted_audit=wifi_unredacted_audit,
+        wdutil_audit_samples=wdutil_audit_samples,
+        raw_measurement_json_path=str(pretty_path),
+    )
+    for row in rows:
         append_csv_row(row)
-        rows_written += 1
 
     return {
         "measurement_set_id": measurement_set_id,
-        "rows_written": rows_written,
-        "corelocation_query_failed": mac_location_audit["corelocation_query_failed"],
-        "raw_measurement_json_path": str(raw_measurement_json_path),
-        "phone_measurement_parse_ok": phone_parsed["phone_measurement_parse_ok"],
+        "measurement_set_sequence": measurement_set_sequence,
+        "measurement_set_timestamp_utc": measurement_set_timestamp_utc,
+        "row_count": len(rows),
+        "environment": state.environment,
+        "building": state.building,
+        "floor": state.floor,
+        "raw_measurement_json_path": str(pretty_path),
     }
 
 
-# ---------- interactive UI ----------
+class SudoKeepAlive(threading.Thread):
+    def __init__(self, stop_event: threading.Event, interval_seconds: int = DEFAULT_SUDO_KEEPALIVE_SECONDS) -> None:
+        super().__init__(daemon=True)
+        self.stop_event = stop_event
+        self.interval_seconds = interval_seconds
+        self.last_ok: Optional[bool] = None
+        self.last_run_utc: str = ""
 
-def print_status(state: SurveyState) -> None:
-    print(
-        f"collector={state.collector_id!r}  device={state.device_name!r}  "
-        f"env={state.environment!r}  building={state.building!r}  floor={state.floor!r}  "
-        f"wdutil_samples={state.wdutil_samples}  wdutil_delay={state.wdutil_delay_seconds}"
-    )
-    print(f"csv={CSV_FILE}  raw_jsonl={RAW_JSONL_FILE}  raw_dir={RAW_DIR}")
-    unredactor = find_wifi_unredactor()
-    print(f"wifi_unredactor={'FOUND ' + unredactor if unredactor else 'not found'}")
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            self.last_run_utc = now_utc_iso()
+            res = run_command(["sudo", "-n", "true"], timeout=10)
+            self.last_ok = bool(res.get("ok"))
+            if self.stop_event.wait(self.interval_seconds):
+                return
 
+
+class Sampler(threading.Thread):
+    def __init__(self, state_store: StateStore) -> None:
+        super().__init__(daemon=True)
+        self.state_store = state_store
+        self.stop_event = threading.Event()
+        self.running_event = threading.Event()
+        self.running_event.set()
+        self.counter_lock = threading.Lock()
+        self.measurement_set_sequence = 0
+        self.last_result: Dict[str, Any] = {}
+        self.last_error: str = ""
+        self.active_capture = False
+        self.keepalive = SudoKeepAlive(self.stop_event)
+
+    def run(self) -> None:
+        self.keepalive.start()
+        while not self.stop_event.is_set():
+            if not self.running_event.is_set():
+                time.sleep(0.2)
+                continue
+
+            state = self.state_store.snapshot()
+            with self.counter_lock:
+                self.measurement_set_sequence += 1
+                seq = self.measurement_set_sequence
+
+            started = time.monotonic()
+            self.active_capture = True
+            try:
+                result = capture_measurement_set(state, seq)
+                self.last_result = result
+                self.last_error = ""
+                print(
+                    f"\nSaved set #{seq} ({result['measurement_set_id']}) "
+                    f"[{state.environment} {state.building} {state.floor}]"
+                )
+            except Exception as exc:
+                self.last_error = repr(exc)
+                print(f"\nCapture error on set #{seq}: {self.last_error}")
+            finally:
+                self.active_capture = False
+
+            elapsed = time.monotonic() - started
+            remaining = max(0.0, state.capture_interval_seconds - elapsed)
+            deadline = time.monotonic() + remaining
+            while not self.stop_event.is_set() and self.running_event.is_set() and time.monotonic() < deadline:
+                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+
+    def pause(self) -> None:
+        self.running_event.clear()
+
+    def resume(self) -> None:
+        self.running_event.set()
+
+    def shutdown(self) -> None:
+        self.stop_event.set()
+        self.running_event.set()
+
+    def status(self) -> Dict[str, Any]:
+        state = self.state_store.snapshot()
+        return {
+            "running": self.running_event.is_set(),
+            "active_capture": self.active_capture,
+            "measurement_set_sequence": self.measurement_set_sequence,
+            "last_result": self.last_result,
+            "last_error": self.last_error,
+            "sudo_keepalive_last_ok": self.keepalive.last_ok,
+            "sudo_keepalive_last_run_utc": self.keepalive.last_run_utc,
+            "state": {
+                "collector_id": state.collector_id,
+                "device_name": state.device_name,
+                "environment": state.environment,
+                "building": state.building,
+                "floor": state.floor,
+                "capture_interval_seconds": state.capture_interval_seconds,
+                "wdutil_samples": state.wdutil_samples,
+                "wdutil_delay_seconds": state.wdutil_delay_seconds,
+            },
+        }
 
 
 def print_help() -> None:
     print(
-        """
-Commands
-  [Enter] or c   capture a measurement set
-  t              toggle indoor/outdoor
-  i              set indoor
-  o              set outdoor
-  b              set building
-  f              set floor
-  n              set collector name
-  d              set device name
-  s              set wdutil sample count
-  l              set wdutil delay seconds
-  p              print current status
-  h              help
-  q              quit
-"""
+        "\nCommands:\n"
+        "  pause         Pause after the current measurement set finishes\n"
+        "  resume        Resume timed sampling\n"
+        "  toggle / t    Toggle indoor/outdoor\n"
+        "  indoor / i    Set environment to indoor\n"
+        "  outdoor / o   Set environment to outdoor\n"
+        "  building / b  Set building label\n"
+        "  floor / f     Set floor label\n"
+        "  collector / n Set collector id\n"
+        "  device / d    Set device name\n"
+        "  interval / r  Set minimum seconds between burst starts\n"
+        "  samples / s   Set wdutil polls per burst\n"
+        "  delay / l     Set delay between wdutil polls inside one burst\n"
+        "  status / p    Print current status\n"
+        "  help / h      Show this help\n"
+        "  quit / q      Quit\n"
     )
 
+
+def print_status(sampler: Sampler) -> None:
+    print(json.dumps(sampler.status(), indent=2, ensure_ascii=False))
+
+
+def configure_initial_state() -> SurveyState:
+    default_collector = os.environ.get("USER") or "collector1"
+    default_device = platform.node() or "macbook"
+
+    print("Initial configuration (press Enter to keep defaults)")
+    collector_id = prompt_with_default("collector_id", default_collector)
+    device_name = prompt_with_default("device_name", default_device)
+    environment = prompt_with_default("environment (indoor/outdoor)", "indoor").strip().lower()
+    if environment not in ("indoor", "outdoor"):
+        environment = "indoor"
+    building = prompt_with_default("building", "")
+    floor = prompt_with_default("floor", "")
+    capture_interval_seconds = parse_float_with_default(
+        prompt_with_default("capture interval seconds", str(DEFAULT_CAPTURE_INTERVAL_SECONDS)),
+        DEFAULT_CAPTURE_INTERVAL_SECONDS,
+        minimum=0.0,
+    )
+    wdutil_samples = parse_int_with_default(
+        prompt_with_default("wdutil polls per burst", str(DEFAULT_WDUTIL_SAMPLES)),
+        DEFAULT_WDUTIL_SAMPLES,
+        minimum=1,
+    )
+    wdutil_delay_seconds = parse_float_with_default(
+        prompt_with_default("delay between wdutil polls (seconds)", str(DEFAULT_WDUTIL_DELAY_SECONDS)),
+        DEFAULT_WDUTIL_DELAY_SECONDS,
+        minimum=0.0,
+    )
+
+    return SurveyState(
+        collector_id=collector_id,
+        device_name=device_name,
+        environment=environment,
+        building=building,
+        floor=floor,
+        capture_interval_seconds=capture_interval_seconds,
+        wdutil_samples=wdutil_samples,
+        wdutil_delay_seconds=wdutil_delay_seconds,
+    )
 
 
 def main() -> int:
-    if not shutil.which("CoreLocationCLI"):
-        print("ERROR: CoreLocationCLI not found in PATH.")
-        print("Install it with: brew install --cask corelocationcli")
-        return 2
+    initial_state = configure_initial_state()
+    ensure_csv_schema_compatible()
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-    state = SurveyState(
-        collector_id=prompt_with_default("collector_id", os.environ.get("WIFI_COLLECTOR_ID", "")),
-        device_name=prompt_with_default("device_name", platform.node()),
-    )
-    state.building = prompt_with_default("building", "")
-    state.floor = prompt_with_default("floor", "")
+    sampler = Sampler(StateStore(initial_state))
+    sampler.start()
 
-    print()
-    print("Tip: run `sudo -v` first so wdutil won't keep prompting.")
-    print("If SSID/BSSID are redacted, install wifi-unredactor and grant it Location Services.")
     print_help()
-    print_status(state)
+    print("Sampling started. Type commands while it runs.\n")
 
-    while True:
-        cmd = input(f"\n[env={state.environment}] > ").strip().lower()
+    try:
+        while True:
+            status = sampler.status()
+            mode = "running" if status["running"] else "paused"
+            state = status["state"]
+            prompt = (
+                f"[{mode} env={state['environment']} building={state['building']} "
+                f"floor={state['floor']} interval={state['capture_interval_seconds']}] > "
+            )
+            cmd = input(prompt).strip().lower()
 
-        if cmd in ("", "c"):
-            waypoint_id = input("waypoint_id: ").strip()
-            notes = input("notes: ").strip()
-            summary = capture_once(state, waypoint_id=waypoint_id, notes=notes)
-            print("Saved measurement set:")
-            print(json.dumps(summary, indent=2, ensure_ascii=False))
-
-        elif cmd == "t":
-            state.environment = "outdoor" if state.environment == "indoor" else "indoor"
-            print(f"Environment -> {state.environment}")
-
-        elif cmd == "i":
-            state.environment = "indoor"
-            print("Environment -> indoor")
-
-        elif cmd == "o":
-            state.environment = "outdoor"
-            print("Environment -> outdoor")
-
-        elif cmd == "b":
-            state.building = prompt_with_default("building", state.building)
-            print(f"Building -> {state.building}")
-
-        elif cmd == "f":
-            state.floor = prompt_with_default("floor", state.floor)
-            print(f"Floor -> {state.floor}")
-
-        elif cmd == "n":
-            state.collector_id = prompt_with_default("collector_id", state.collector_id)
-            print(f"Collector -> {state.collector_id}")
-
-        elif cmd == "d":
-            state.device_name = prompt_with_default("device_name", state.device_name)
-            print(f"Device -> {state.device_name}")
-
-        elif cmd == "s":
-            raw = prompt_with_default("wdutil sample count", str(state.wdutil_samples))
-            try:
-                state.wdutil_samples = max(1, int(raw))
-            except Exception:
-                print("Invalid integer.")
+            if cmd == "":
+                continue
+            if cmd == "pause":
+                sampler.pause()
+                print("Pause requested. It takes effect after the current burst finishes.")
+            elif cmd in ("resume", "start"):
+                sampler.resume()
+                print("Sampling resumed.")
+            elif cmd in ("toggle", "t"):
+                snapshot = sampler.state_store.update(
+                    lambda s: setattr(s, "environment", "outdoor" if s.environment == "indoor" else "indoor")
+                )
+                print(f"Environment -> {snapshot.environment}")
+            elif cmd in ("indoor", "i"):
+                sampler.state_store.update(lambda s: setattr(s, "environment", "indoor"))
+                print("Environment -> indoor")
+            elif cmd in ("outdoor", "o"):
+                sampler.state_store.update(lambda s: setattr(s, "environment", "outdoor"))
+                print("Environment -> outdoor")
+            elif cmd in ("building", "b"):
+                current = sampler.state_store.snapshot()
+                new_value = prompt_with_default("building", current.building)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "building", value))
+                print(f"Building -> {new_value}")
+            elif cmd in ("floor", "f"):
+                current = sampler.state_store.snapshot()
+                new_value = prompt_with_default("floor", current.floor)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "floor", value))
+                print(f"Floor -> {new_value}")
+            elif cmd in ("collector", "n"):
+                current = sampler.state_store.snapshot()
+                new_value = prompt_with_default("collector_id", current.collector_id)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "collector_id", value))
+                print(f"Collector -> {new_value}")
+            elif cmd in ("device", "d"):
+                current = sampler.state_store.snapshot()
+                new_value = prompt_with_default("device_name", current.device_name)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "device_name", value))
+                print(f"Device -> {new_value}")
+            elif cmd in ("interval", "r"):
+                current = sampler.state_store.snapshot()
+                raw = prompt_with_default("capture interval seconds", str(current.capture_interval_seconds))
+                new_value = parse_float_with_default(raw, current.capture_interval_seconds, minimum=0.0)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "capture_interval_seconds", value))
+                print(f"Capture interval seconds -> {new_value}")
+            elif cmd in ("samples", "s"):
+                current = sampler.state_store.snapshot()
+                raw = prompt_with_default("wdutil polls per burst", str(current.wdutil_samples))
+                new_value = parse_int_with_default(raw, current.wdutil_samples, minimum=1)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "wdutil_samples", value))
+                print(f"wdutil polls per burst -> {new_value}")
+            elif cmd in ("delay", "l"):
+                current = sampler.state_store.snapshot()
+                raw = prompt_with_default("delay between wdutil polls", str(current.wdutil_delay_seconds))
+                new_value = parse_float_with_default(raw, current.wdutil_delay_seconds, minimum=0.0)
+                sampler.state_store.update(lambda s, value=new_value: setattr(s, "wdutil_delay_seconds", value))
+                print(f"wdutil delay seconds -> {new_value}")
+            elif cmd in ("status", "p"):
+                print_status(sampler)
+            elif cmd in ("help", "h"):
+                print_help()
+            elif cmd in ("quit", "q"):
+                sampler.shutdown()
+                sampler.join(timeout=5)
+                return 0
             else:
-                print(f"wdutil sample count -> {state.wdutil_samples}")
-
-        elif cmd == "l":
-            raw = prompt_with_default("wdutil delay seconds", str(state.wdutil_delay_seconds))
-            try:
-                state.wdutil_delay_seconds = max(0.0, float(raw))
-            except Exception:
-                print("Invalid number.")
-            else:
-                print(f"wdutil delay seconds -> {state.wdutil_delay_seconds}")
-
-        elif cmd == "p":
-            print_status(state)
-
-        elif cmd == "h":
-            print_help()
-
-        elif cmd == "q":
-            return 0
-
-        else:
-            print("Unknown command. Press h for help.")
+                print("Unknown command. Type help for options.")
+    except KeyboardInterrupt:
+        print("\nStopping...")
+        sampler.shutdown()
+        sampler.join(timeout=5)
+        return 0
 
 
 if __name__ == "__main__":
