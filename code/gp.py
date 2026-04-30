@@ -92,8 +92,8 @@ class GaussianProcess():
 
         priors = jnp.array(priors)
         default_priors = jnp.array([
-            1+1e-3, y_train[X_train[:,-1].astype(bool)].var(),
-            1+1e-3, y_train[~X_train[:,-1].astype(bool)].var(),
+            1+1e-3, 1e3, #y_train[X_train[:,-1].astype(bool)].var(),
+            1+1e-3, 1e3, #y_train[~X_train[:,-1].astype(bool)].var(),
         ])
         IG_priors = priors.at[no_prior := jnp.isnan(priors)].set(default_priors[no_prior])
         self.IG_priors = IG_priors
