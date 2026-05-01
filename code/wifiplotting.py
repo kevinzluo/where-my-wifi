@@ -17,6 +17,9 @@ from matplotlib.path import Path as MplPath
 TILE_SIZE = 256
 USER_AGENT = "stats305c-eda/1.0"
 
+TL_CORNER = [37.430582, -122.173904]
+BR_CORNER = [37.42705, -122.169413]
+
 
 def first_non_null(series, fallback="unknown"):
     non_null = series.dropna()
@@ -173,7 +176,8 @@ def fetch_building_footprints(bounds, zoom, timeout=10, pad=None):
                 role = member.get("role") or "outer"
                 if role == "part":
                     continue
-                ring = geometry_to_world_ring(member.get("geometry") or [], zoom)
+                ring = geometry_to_world_ring(
+                    member.get("geometry") or [], zoom)
                 if not ring:
                     continue
                 if role == "inner":
@@ -246,6 +250,29 @@ class OSMPlotContext:
         self.building_error = None
 
     @classmethod
+    def from_bounds(
+        cls,
+        init_lons,
+        init_lats,
+        zoom=None,
+        *,
+        pad_fraction=0.18,
+        min_pad=0.0007,
+        **kwargs,
+    ):
+
+        bounds = padded_bounds(init_lons, init_lats,
+                               pad_fraction=pad_fraction, min_pad=min_pad)
+        if zoom is None:
+            zoom_kwargs = {
+                key: kwargs[key]
+                for key in ("max_tiles", "min_zoom", "max_zoom")
+                if key in kwargs
+            }
+            zoom = choose_zoom_for_bounds(bounds, **zoom_kwargs)
+        return cls(bounds, zoom=zoom, **kwargs)
+
+    @classmethod
     def from_dataframe(
         cls,
         df,
@@ -259,11 +286,13 @@ class OSMPlotContext:
     ):
         coords = df[[lon_col, lat_col]].dropna()
         if coords.empty:
-            raise ValueError("Cannot build OSMPlotContext from an empty coordinate set.")
+            raise ValueError(
+                "Cannot build OSMPlotContext from an empty coordinate set.")
 
         lons = coords[lon_col].to_numpy()
         lats = coords[lat_col].to_numpy()
-        bounds = padded_bounds(lons, lats, pad_fraction=pad_fraction, min_pad=min_pad)
+        bounds = padded_bounds(
+            lons, lats, pad_fraction=pad_fraction, min_pad=min_pad)
         if zoom is None:
             zoom_kwargs = {
                 key: kwargs[key]
@@ -427,7 +456,7 @@ def aggregate_wifi_points(wifi_df, value=None, new_data=None):
     return grouped, na_grouped
 
 
-def plot_wifi_heatmap(
+def plot_agg_wifi_heatmap(
     wifi_df,
     value=None,
     new_data=None,
@@ -452,7 +481,7 @@ def plot_wifi_heatmap(
             plotname = "UNKNOWN_VALUE_NAME"
     else:
         if value is None:
-            value = "rssi"
+            value = "rssi_sample"
             plotname = "RSSI"
         elif plotname is None:
             plotname = value.capitalize()
@@ -480,7 +509,8 @@ def plot_wifi_heatmap(
             "Falling back to a plain lat/lon heatmap."
         )
     elif metadata["building_error"] is not None:
-        print(f"OSM building footprints unavailable ({metadata['building_error']}).")
+        print(
+            f"OSM building footprints unavailable ({metadata['building_error']}).")
 
     if basemap_loaded:
         xs, ys = context.to_world(
