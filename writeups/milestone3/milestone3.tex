@@ -1,0 +1,143 @@
+\documentclass{article}
+\usepackage[useHeader, Override, useIndent]{../preamble}
+\usepackage{subcaption}
+
+\usepackage{dsfont}
+
+\newcommand{\bl}{\mathbf}
+\newcommand{\bs}{\boldsymbol}
+\newcommand{\new}{\mathsf{new}}
+\newcommand{\sfout}{\mathsf{out}}
+\newcommand{\sfin}{\mathsf{in}}
+\newcommand{\post}{\mathsf{post}}
+
+%%%%%%%%%% TO FILL %%%%%%%%%%
+\def\docAuthor{Jamie Liu and Kevin Luo}
+\def\docTitle{Milestone 3: Model and Inference}
+\def\docClass{STATS 305C}
+\def\docTerm{Spring 2026}
+\def\docDate{\today}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\lhead{\docAuthor}
+\chead{\docTitle}
+\rhead{\docClass}
+
+\usepackage{hyperref}
+
+\begin{document}
+\setcounter{section}{-1}
+
+\section{The Generative Model}\label{sec:gen-model}
+
+We operate in a fixed-design setup where we observe pairs $\{(\bl{x}_i, y_i)\}_{i = 1} ^n$, with the covariates $\bl{x}_i$ nonrandom. Here the covariates include latitude, longitude, access points, and whether we are indoors or outdoors. The measured WiFi statistics $y_i$ are generated jointly from the $\bl{x}_i$ according to the hierarchical structure below\footnote{Inverse Gamma here is parameterized as $p(x) \propto x^{-\alpha - 1}\exp(-\beta/x)$.}:
+\begin{align*}
+    &f \sim \mathcal{GP}(m, K) \qquad \sigma_\mathsf{in}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{in}}, \beta_{0,\mathsf{in}}) \qquad \sigma_\mathsf{out}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{out}}, \beta_{0,\mathsf{out}}) \\
+    &s_i \equiv s_i(\bl{x}_i) := \begin{cases}
+    \mathsf{in} &\text{if } \mathbf{x}_{i,\mathsf{is\_in}} = 1 \\
+    \mathsf{out} &\text{if } \mathbf{x}_{i,\mathsf{is\_in}} = 0 \\
+    \end{cases} \qquad \epsilon_i \mid \tau_i^2, \bl{x}_i \sim_{\mathsf{ind.}} \N(0, \sigma_{s_i}^2) \\
+    &y_i \mid \epsilon_i, \bl{x}_i = f(\bl{x}_i) + \epsilon_i
+\end{align*}
+
+\paragraph{Prior mean and covariance.} We try several settings for the prior mean and covariance $m$ and $K$. In all setups, the covariance kernel is parameterized as
+    \begin{align*}
+        K(\bl{x}_1, \bl{x}_2) = \exp\left\{-\frac{1}{b}\mathsf{d}(\bl{x}_1, \bl{x}_2) \right\}
+    \end{align*}
+where $b$ is a hyperparameter governing correlation decay.
+\begin{itemize}
+    \item \textsf{baseline}: As a baseline, set $m$ to be constant and set $K$ to only depend on the latitude and longitude of observed points. The prior mean is set to be the global mean\footnote{We are aware that making these data dependent violates the uncertainty guarantees -- once we have more data, we plan to set aside a small portion for prior mean estimation.}. That is, we set $m(\bl{x}) = \overline{y}$ and parameterize the distance function in the covariance kernel as $\mathsf{d}(\bl{x}_1, \bl{x}_2) = \|(x_{1,\mathsf{lat}}, x_{1,\mathsf{lon}}) - (x_{2,\mathsf{lat}}, x_{2,\mathsf{lon}})\|_2^2$. 
+
+    \item \textsf{mean-in/out}: Our data analysis from last week revealed whether the sample is taken indoors or outdoors has a large effect on the signal strength; as such, we next make the mean aware of this covariate, setting the prior mean to be the mean of all indoor samples for indoor points, and to the mean of all outdoor samples for outdoor points. That is, $m(\bl{x}_i) = \overline{y_{s_i}}$.
+    \item \textsf{mean-cov-in/out}: Our third attempt further adds indoor/outdoor as a feature to the distance governing the covariance kernel, setting $\mathsf{d}(\bl{x}_1, \bl{x}_2) = \|(x_{1,\mathsf{lat}}, x_{1,\mathsf{lon}}, x_{1,\mathsf{is\_in}}) - (x_{2,\mathsf{lat}}, x_{2,\mathsf{lon}}, x_{2,\mathsf{is\_in}})\|_2^2$
+\end{itemize}
+
+
+\paragraph{Error parameterization}
+In our exploratory data analysis, we observed relatively light-tailed errors and little temporal dependence in errors. Hence we are willing to make these assumptions for now, though we plan to revisit them. We also observed a large difference in the distribution of points sampled indoors and outdoors, and hence we choose to de-couple their sampling variances. 
+
+\paragraph{Why not a GP per access point?} There are far more access points than the one-per-building we initially believed. Indeed, in our 5,000 new datapoints, we observe 215 access points. The distribution has a heavy right tail, where most access points only have a few observations while others as many as 200. This suggests that we need to think of a way to couple the GPs for each access point so that the ones with more samples can help inform the smaller ones; this can maybe be accomplished by informing the covariance kernel of the access point (so two points with the same access point are more correlated).
+
+\section{Inference Algorithm}
+
+We use Gibbs sampling to draw from the distribution, since the posterior does not have a closed form. To setup notation, define the following for a matrix $\bl{X} = [\bl{x}_1, \bl{x}_2, \dots, \bl{x}_n]^\top \in \R^{n \times d}$:
+\begin{align*}
+    \bl{f}(\bl{X}) = (f(\bl{x}_i))_{i = 1} ^n \in \R^n
+    % \begin{pmatrix}
+    %     f(\bl{x}_1) \\ 
+    %     f(\bl{x}_2) \\ 
+    %     \vdots \\
+    %     f(\bl{x}_n)
+    % \end{pmatrix}
+    &\qquad 
+    \bl{m}(\bl{X}) = (m(\bl{x}_i))_{i = 1} ^n \in \R^n
+    % \begin{pmatrix}
+    %     m(\bl{x}_1) \\ 
+    %     m(\bl{x}_2) \\ 
+    %     \vdots \\
+    %     m(\bl{x}_n)
+    % \end{pmatrix}
+    \\
+    \bl{K}(\bl{X},\bl{X'}) = (K(\bl{x}_i, \bl{x}'_j))_{i,j = 1}^n \in \R^{n \times n'} 
+    &\qquad 
+    \bs\Sigma_{\sigma} = \mathsf{diag}(\sigma_{s_1}^2, \cdots, \sigma_{s_n}^2) \in \R^{n \times n}
+\end{align*}
+Furthermore, define $S_{\mathsf{in}} = \{i: s_i = \mathsf{in}\}$, $n_\mathsf{in} = |S_\mathsf{in}|$, and likewise for $\mathsf{out}$. 
+
+The two conditionals of interest have closed forms which are given as follows. First, the conditional of $\bl{f}$ can be computed by noting that conditional on the $\sigma^2_{\sfin/\sfout}$, everything is multivariate Gaussian:
+\begin{align*}
+    \bl{f} \mid \bl{y}, \sigma^2_\mathsf{in}, \sigma^2_\mathsf{out} &\sim \N(\bs\mu_f, \bs\Sigma_f) \qquad \bs\Sigma_f = (\bl{K}^{-1}(\bl{X}, \bl{X}) + \bs\Sigma_\sigma^{-1})^{-1} 
+    \qquad
+    \bs\mu_f = \bs\Sigma_f(\bl{K}_\bl{X}^{-1} \bl{m}_\bl{X} + \bs\Sigma^{-1}_\sigma\bl{y}).
+\end{align*}
+Now conditional on $\bl{f}$, this becomes an NIX problem. Thus, for each $\mathsf{g} \in \{\mathsf{in}, \mathsf{out}\}$, we have
+\begin{align*}
+    \sigma^2_\mathsf{g} \mid \bl{y}, \bl{f} &\sim \mathrm{InvGamma}(\alpha_{n, \mathsf{g}}, \beta_{n, \mathsf{g}}) \qquad \alpha_{n, \mathsf{g}} = \alpha_{0, \mathsf{g}} + \frac{n_\mathsf{g}}{2} \qquad \beta_{n, \mathsf{g}} = \beta_{0, \mathsf{g}} + \frac{1}{2} \sum_{i \in S_{\mathsf{in}}}(y_i - f_i)^2.
+\end{align*}
+Now to draw posterior samples of other points $\bl{X}_\new$ on the grid, we use 
+\begin{align*}
+    \bl{y}_\new \mid \bl{y}, \sigma^2_\mathsf{in}, \sigma^2_\mathsf{out} &\sim \N(\bs\mu_\new, \bs\Sigma_\new) \\
+    \bs\mu_\new &= \bl{m}(\bl{X}_\new) + \bl{K}(\bl{X}_\new, \bl{X})(\bl{K}(\bl{X}, \bl{X}) + \bs\Sigma_\sigma)^{-1}(\bl{y} - \bl{m}(\bl{X})) \\
+    \bs\Sigma_\new &= \bl{K}(\bl{X}_\new, \bl{X}_\new) - \bl{K}(\bl{X}_\new, \bl{X})(\bl{K}(\bl{X}, \bl{X}) + \bs\Sigma_\sigma)^{-1}\bl{K}(\bl{X},\bl{X}_\new).
+\end{align*}
+
+\section{Posterior Analysis}
+\begin{figure}
+    \centering
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        % \includegraphics[width=\linewidth]{}
+        \caption{Trace plots for $\sigma^2_{\sfin,\sfout}$}
+        \label{fig:trace}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        % \includegraphics[width=\linewidth]{}
+        \caption{KNN baseline, with parameters $k = 67$ (selected via Cross-Validation) }
+        \label{fig:knn}
+    \end{subfigure}
+    \begin{subfigure}{0.95\textwidth}
+        \caption{Posterior means for various settings listed in Section~\ref{sec:gen-model}. From left to right, \textsf{baseline}, \textsf{mean-in/out}, \textsf{mean-cov-in/out}.}
+        \label{fig:posts}
+    \end{subfigure}
+    % \caption{Caption}
+    % \label{fig:}
+\end{figure}
+
+\subsection{Convergence}
+To check convergence of the Gibbs sampler, we look at the trace plots of $\sigma^2_\sfin$ and $\sigma^2_\sfout$. We run $M$ chains each with $K$ steps and observe the plots in Figure~\ref{fig:trace}, which show low autocorrelation. For $\bl{f}$, we measure the Gelman-Rubin statistic, which roughly quantifies the difference between in-chain variance and the variance across chains. We observe that all of our statistics are close to $1$, indicating convergence.
+
+\subsection{Posterior visualization}
+
+We show in Figure~\ref{fig:posts} the plots of the posterior means for each of the three settings of our Gibbs sampler as described in Section~\ref{sec:gen-model}. We also fit a simple KNN as another baseline (in Figure~\ref{fig:knn}). For now, our comparison is based on are looking at how well the posterior mean interpolates the datapoints. 
+
+For the future, we plan on more numerical quantifications of how well our process fits the data in order to perform hyperparameter tuning. Our main plan is to compare likelihoods of held-out datapoints. Our train/test split process will be to discretize the latitude-longitude grid and assign grid cells to either the training set or test set. Similar ideas can then be used to build cross-validation pipelines. This will then allow us to measure how well our process generalizes to unseen areas of campus. 
+\newpage
+\appendix
+
+\section{Modification of Data Collection}
+
+These two weeks, we made a point to gather more indoor datapoints, since the previous dataset was mostly outdoor data. Furthermore, we started over, since the old CoreLocation location data proved to be too coarse to be useful. Now all locations are based off iPhone GPS location. We also learned that iPhone GPS location when connected to WiFi is much worse than when connected to data only. However, even when connected to data, indoor location accuracy is quite poor, so we further built a GUI to manually correct datapoints based on the path taken indoors. We now have 5,000 new datapoints of only the Sequoia area, with roughly half of the points taken indoors. 
+
+
+\end{document}
