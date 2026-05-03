@@ -1,0 +1,14 @@
+\documentclass{article}
+
+\usepackage[margin=1in]{geometry}
+\begin{document}
+\begin{enumerate}
+    \item Indoor vs outdoor distribution looks too similar
+    \item weird null measurements within the same measurement set, what's the right way to handle them in data cleaning?
+    \begin{itemize}
+        \item flag everything as valid/invalid based on if both noise\_dbm and rssi\_dbm are non-zero. Then if within a single set, there is at least one non-null, drop the nulls within that set. However, if all three are null, mark as having no wifi. 
+    \end{itemize}
+    \item BSSID could be used to inform the covariance kernel
+    \item Locations maybe have noise too
+\end{enumerate}
+\end{document}
