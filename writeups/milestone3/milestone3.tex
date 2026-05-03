@@ -23,12 +23,14 @@
 \chead{\docTitle}
 \rhead{\docClass}
 
+
 \usepackage{hyperref}
 
 \begin{document}
 \setcounter{section}{-1}
 
 \section{The Generative Model}\label{sec:gen-model}
+
 
 We operate in a fixed-design setup where we observe pairs $\{(\bl{x}_i, y_i)\}_{i = 1} ^n$, with the covariates $\bl{x}_i$ nonrandom. Here the covariates include latitude, longitude, access points, and whether we are indoors or outdoors. The measured WiFi statistics $y_i$ are generated jointly from the $\bl{x}_i$ according to the hierarchical structure below\footnote{Inverse Gamma here is parameterized as $p(x) \propto x^{-\alpha - 1}\exp(-\beta/x)$.}:
 \begin{align*}
@@ -40,12 +42,12 @@ We operate in a fixed-design setup where we observe pairs $\{(\bl{x}_i, y_i)\}_{
     &y_i \mid \epsilon_i, \bl{x}_i = f(\bl{x}_i) + \epsilon_i
 \end{align*}
 
-\paragraph{Prior mean and covariance.} We try several settings for the prior mean and covariance $m$ and $K$. In all setups, the covariance kernel is parameterized as
-    \begin{align*}
-        K(\bl{x}_1, \bl{x}_2) = \exp\left\{-\frac{1}{b}\mathsf{d}(\bl{x}_1, \bl{x}_2) \right\}
-    \end{align*}
+\paragraph{Prior mean and covariance.} We try several settings for the prior mean and covariance $m$ and $K$. In all setups, the covariance kernel is parameterized as $K(\bl{x}_1, \bl{x}_2) = \exp\left\{-\mathsf{d}(\bl{x}_1, \bl{x}_2)/b \right\}$,
 where $b$ is a hyperparameter governing correlation decay.
 \begin{itemize}
+    \setlength{\itemsep}{0ex}
+    % \setlength{\parskip}{0ex}
+    % \itemsep0em
     \item \textsf{baseline}: As a baseline, set $m$ to be constant and set $K$ to only depend on the latitude and longitude of observed points. The prior mean is set to be the global mean\footnote{We are aware that making these data dependent violates the uncertainty guarantees -- once we have more data, we plan to set aside a small portion for prior mean estimation.}. That is, we set $m(\bl{x}) = \overline{y}$ and parameterize the distance function in the covariance kernel as $\mathsf{d}(\bl{x}_1, \bl{x}_2) = \|(x_{1,\mathsf{lat}}, x_{1,\mathsf{lon}}) - (x_{2,\mathsf{lat}}, x_{2,\mathsf{lon}})\|_2^2$. 
 
     \item \textsf{mean-in/out}: Our data analysis from last week revealed whether the sample is taken indoors or outdoors has a large effect on the signal strength; as such, we next make the mean aware of this covariate, setting the prior mean to be the mean of all indoor samples for indoor points, and to the mean of all outdoor samples for outdoor points. That is, $m(\bl{x}_i) = \overline{y_{s_i}}$.
@@ -112,7 +114,7 @@ Now to draw posterior samples of other points $\bl{X}_\new$ on the grid, we use
     \end{subfigure}
     \hfill
     \begin{subfigure}{0.45\textwidth}
-        % \includegraphics[width=\linewidth]{}
+        \includegraphics[width=\linewidth]{writeups/milestone3/knnplot.pdf}
         \caption{KNN baseline, with parameters $k = 67$ (selected via Cross-Validation) }
         \label{fig:knn}
     \end{subfigure}
