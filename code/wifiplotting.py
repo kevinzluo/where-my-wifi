@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from IPython.display import display
-from matplotlib.patches import PathPatch
+from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch, PathPatch
 from matplotlib.path import Path as MplPath
 
 TILE_SIZE = 256
@@ -578,3 +579,201 @@ def plot_agg_wifi_heatmap(
     )
     # fig.tight_layout()
     return fig, ax, points, points_na
+
+
+def _resolve_column(df, preferred, fallbacks, label):
+    if preferred in df.columns:
+        return preferred
+    for fallback in fallbacks:
+        if fallback in df.columns:
+            return fallback
+    raise KeyError(
+        f"Missing {label} column. Tried: "
+        f"{', '.join([preferred, *fallbacks])}."
+    )
+
+
+def _nearest_indices(points, query_points, chunk_size=4096):
+    try:
+        from scipy.spatial import cKDTree
+
+        return cKDTree(points).query(query_points, k=1)[1]
+    except ImportError:
+        nearest = np.empty(query_points.shape[0], dtype=int)
+        for start in range(0, query_points.shape[0], chunk_size):
+            stop = min(start + chunk_size, query_points.shape[0])
+            diff = query_points[start:stop, None, :] - points[None, :, :]
+            dist2 = np.sum(diff * diff, axis=2)
+            nearest[start:stop] = np.argmin(dist2, axis=1)
+        return nearest
+
+
+def plot_access_point_voronoi(
+    wifi_df,
+    lat_col="latitude",
+    lon_col="longitude",
+    ap_col="ap",
+    *,
+    context=None,
+    bounds=None,
+    resolution=350,
+    top_n=None,
+    alpha=0.35,
+    cmap="turbo",
+    show_observations=True,
+    max_legend_items=15,
+    draw_buildings=True,
+):
+    """
+    Plot access-point regions induced by nearest observed WiFi sample.
+
+    Each map pixel is assigned to the access point attached to the closest
+    observed point, measured in the same projected coordinates used by the OSM
+    basemap. If an access point has multiple observations, its displayed region
+    is the union of those observations' Voronoi cells.
+    """
+    lat_col = _resolve_column(wifi_df, lat_col, ["lat"], "latitude")
+    lon_col = _resolve_column(wifi_df, lon_col, ["lon"], "longitude")
+    ap_col = _resolve_column(
+        wifi_df,
+        ap_col,
+        ["access_point", "access point", "bssid"],
+        "access point",
+    )
+
+    cols = [lon_col, lat_col, ap_col]
+    points = wifi_df.loc[:, cols].dropna().copy()
+    points[lon_col] = points[lon_col].astype(float)
+    points[lat_col] = points[lat_col].astype(float)
+    finite = np.isfinite(points[lon_col]) & np.isfinite(points[lat_col])
+    points = points.loc[finite]
+    if points.empty:
+        raise ValueError("No rows have finite coordinates and access point labels.")
+
+    ap_counts = points[ap_col].value_counts()
+    if top_n is not None:
+        top_aps = ap_counts.head(top_n).index
+        points = points.loc[points[ap_col].isin(top_aps)].copy()
+        ap_counts = points[ap_col].value_counts()
+        if points.empty:
+            raise ValueError("No access points remain after applying top_n.")
+
+    if context is None:
+        context = OSMPlotContext.from_dataframe(
+            points,
+            lon_col=lon_col,
+            lat_col=lat_col,
+        )
+
+    if bounds is None:
+        bounds = context.bounds
+    bounds = tuple(bounds)
+
+    if np.isscalar(resolution):
+        nx = ny = int(resolution)
+    else:
+        nx, ny = [int(value) for value in resolution]
+    if nx < 2 or ny < 2:
+        raise ValueError("resolution must be at least 2 in each direction.")
+
+    obs_x, obs_y = context.to_world(
+        points[lon_col].to_numpy(),
+        points[lat_col].to_numpy(),
+    )
+    obs_xy = np.column_stack([obs_x, obs_y])
+
+    left, top = context.to_world(bounds[0], bounds[3])
+    right, bottom = context.to_world(bounds[2], bounds[1])
+    grid_x = np.linspace(left, right, nx)
+    grid_y = np.linspace(bottom, top, ny)
+    mesh_x, mesh_y = np.meshgrid(grid_x, grid_y)
+    query_xy = np.column_stack([mesh_x.ravel(), mesh_y.ravel()])
+
+    categories = ap_counts.index.to_list()
+    category_to_code = {ap: code for code, ap in enumerate(categories)}
+    obs_codes = points[ap_col].map(category_to_code).to_numpy()
+    nearest_obs = _nearest_indices(obs_xy, query_xy)
+    assignment = obs_codes[nearest_obs].reshape(ny, nx)
+
+    colors = plt.get_cmap(cmap)(np.linspace(0.02, 0.98, len(categories)))
+    listed_cmap = ListedColormap(colors)
+
+    fig, ax, metadata = context.generate_base_axis(
+        figsize=(12, 9),
+        draw_buildings=draw_buildings,
+    )
+    if not metadata["basemap_loaded"]:
+        print(
+            f"OSM tiles unavailable ({metadata['basemap_error']}). "
+            "Plotting Voronoi regions on a blank projected axis."
+        )
+        context.apply_world_axis(ax)
+    elif metadata["building_error"] is not None:
+        print(
+            f"OSM building footprints unavailable ({metadata['building_error']})."
+        )
+
+    ax.imshow(
+        assignment,
+        extent=(left, right, bottom, top),
+        origin="lower",
+        cmap=listed_cmap,
+        vmin=-0.5,
+        vmax=len(categories) - 0.5,
+        interpolation="nearest",
+        alpha=alpha,
+        zorder=0.5,
+    )
+
+    if show_observations:
+        ax.scatter(
+            obs_x,
+            obs_y,
+            c=obs_codes,
+            cmap=listed_cmap,
+            vmin=-0.5,
+            vmax=len(categories) - 0.5,
+            s=12,
+            alpha=0.85,
+            edgecolors="black",
+            linewidths=0.15,
+            zorder=3,
+        )
+
+    context.apply_world_axis(ax)
+    title = "Nearest-Observation Access Point Regions"
+    if top_n is not None:
+        title += f" (Top {len(categories)})"
+    ax.set_title(title)
+
+    legend_count = min(max_legend_items, len(categories))
+    handles = [
+        Patch(
+            facecolor=colors[index],
+            edgecolor="black",
+            label=f"{categories[index]} ({int(ap_counts.iloc[index])})",
+        )
+        for index in range(legend_count)
+    ]
+    if handles:
+        legend_title = "AP (samples)"
+        if len(categories) > legend_count:
+            legend_title += f"; first {legend_count} of {len(categories)}"
+        ax.legend(
+            handles=handles,
+            title=legend_title,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1),
+            borderaxespad=0,
+            frameon=True,
+        )
+
+    region_counts = np.bincount(assignment.ravel(), minlength=len(categories))
+    region_summary = pd.DataFrame({
+        "ap": categories,
+        "sample_count": ap_counts.reindex(categories).to_numpy(),
+        "grid_cell_count": region_counts,
+        "grid_fraction": region_counts / region_counts.sum(),
+        "color_index": np.arange(len(categories)),
+    })
+    return fig, ax, region_summary
