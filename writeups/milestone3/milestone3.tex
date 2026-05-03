@@ -26,6 +26,9 @@
 
 \usepackage{hyperref}
 
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{15pt}
+
 \begin{document}
 \setcounter{section}{-1}
 
@@ -57,7 +60,6 @@ where $b$ is a hyperparameter governing correlation decay.
 
 \paragraph{Error parameterization}
 In our exploratory data analysis, we observed relatively light-tailed errors and little temporal dependence in errors. Hence we are willing to make these assumptions for now, though we plan to revisit them. We also observed a large difference in the distribution of points sampled indoors and outdoors, and hence we choose to de-couple their sampling variances. 
-
 \paragraph{Why not a GP per access point?} There are far more access points than the one-per-building we initially believed. Indeed, in our 5,000 new datapoints, we observe 215 access points. The distribution has a heavy right tail, where most access points only have a few observations while others as many as 200. This suggests that we need to think of a way to couple the GPs for each access point so that the ones with more samples can help inform the smaller ones; this can maybe be accomplished by informing the covariance kernel of the access point (so two points with the same access point are more correlated).
 
 \section{Inference Algorithm}
