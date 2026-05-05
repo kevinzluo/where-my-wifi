@@ -26,7 +26,7 @@ def stable_cholesky(M, stabilizer=STABILIZER):
     # chol = jnp.linalg.cholesky(M)
     # valid_stabilizer, chol = jax.lax.while_loop(has_nan, recompute, (stabilizer, chol))
     # return chol
-    return jnp.linalg.cholesky(M + jnp.eye(M.shape[0]) * stabilizer)
+    return jnp.linalg.cholesky(0.5 * (M + M.T) + jnp.eye(M.shape[0]) * stabilizer)
 
 @partial(jax.jit, static_argnames=['stabilizer'])
 def fast_inverse_cov(M, stabilizer=STABILIZER):
@@ -48,7 +48,7 @@ def _gibbs_step(key, X_train, y_train, Sigma_0,
 
     m_post, cov_post = p_m_cov(X_train, Sigma_0)
     sqrtCov = stable_cholesky(cov_post, stabilizer)
-    f_hat = sqrtCov @ jr.normal(key_f, shape=m_post.shape) + m_post
+    f_hat = sqrtCov @ jr.normal(key_f, shape=m_post.shape, dtype=X_train.dtype) + m_post
 
     S = (y_train - f_hat)**2
     S_in  = jnp.sum(jnp.where(X_train[:,-1], S, 0.0))
@@ -91,11 +91,11 @@ class GaussianProcess():
         self.y_train = y_train
         self.n, self.d = X_train.shape
 
-        priors = jnp.array(priors)
+        priors = jnp.array(priors, dtype=X_train.dtype)
         default_priors = jnp.array([
             1+1e-3, 1e3, #y_train[X_train[:,-1].astype(bool)].var(),
             1+1e-3, 1e3, #y_train[~X_train[:,-1].astype(bool)].var(),
-        ])
+        ], dtype=X_train.dtype)
         IG_priors = priors.at[no_prior := jnp.isnan(priors)].set(default_priors[no_prior])
         self.IG_priors = IG_priors
 
