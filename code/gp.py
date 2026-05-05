@@ -5,28 +5,28 @@ import jax.random as jr
 from functools import partial
 from sklearn.exceptions import NotFittedError
 
-STABILIZER = 1e-4
+STABILIZER = 1e-3
 
 @partial(jax.jit, static_argnames=['stabilizer'])
 def stable_cholesky(M, stabilizer=STABILIZER):
     '''
     Numerically stable Cholesky decomposition
     '''
-    M = 0.5 * (M + M.T)
+    # M = 0.5 * (M + M.T)
 
-    def has_nan(state):
-        _, chol = state
-        return jnp.any(jnp.isnan(chol))
+    # def has_nan(state):
+    #     _, chol = state
+    #     return jnp.any(jnp.isnan(chol))
 
-    def recompute(state):
-        stabilizer, _ = state
-        stabilizer = stabilizer * 10
-        chol = jnp.linalg.cholesky(M + jnp.eye(M.shape[0]) * stabilizer)
-        return stabilizer, chol
-    chol = jnp.linalg.cholesky(M)
-    valid_stabilizer, chol = jax.lax.while_loop(has_nan, recompute, (stabilizer, chol))
-    return chol
-
+    # def recompute(state):
+    #     stabilizer, _ = state
+    #     stabilizer = stabilizer * 10
+    #     chol = jnp.linalg.cholesky(M + jnp.eye(M.shape[0]) * stabilizer)
+    #     return stabilizer, chol
+    # chol = jnp.linalg.cholesky(M)
+    # valid_stabilizer, chol = jax.lax.while_loop(has_nan, recompute, (stabilizer, chol))
+    # return chol
+    return jnp.linalg.cholesky(M + jnp.eye(M.shape[0]) * stabilizer)
 
 @partial(jax.jit, static_argnames=['stabilizer'])
 def fast_inverse_cov(M, stabilizer=STABILIZER):
@@ -101,6 +101,7 @@ class GaussianProcess():
 
         self.mn = self.m(self.X_train)
         self.Kn = self.K(self.X_train, self.X_train)
+        self.Kn = 0.5 * (self.Kn + self.Kn.T)
 
         def update_IG_in(S_in):
             return self.IG_priors[0] + (self.X_train[:,-1] == 1).sum()/2, self.IG_priors[1] + S_in/2
@@ -137,7 +138,8 @@ class GaussianProcess():
 
         gibbs_step = partial(_gibbs_step, X_train=self.X_train, y_train=self.y_train,
                                 p_m_cov=partial(self.posterior_mean_cov, K_new=self.Kn),
-                                update_IG_in=self.update_IG_in, update_IG_out=self.update_IG_out)
+                                update_IG_in=self.update_IG_in, update_IG_out=self.update_IG_out,
+                                stabilizer=self.cov_stabilizer)
 
         def single_chain_scan(Sigma_0, key):
             f_hat_new, Sigma_0_new = gibbs_step(key=key, Sigma_0=Sigma_0)
