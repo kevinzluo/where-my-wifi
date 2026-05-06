@@ -165,30 +165,16 @@ class GaussianProcess():
 
     def posterior(self, X_new, cov_chains):
         K_new = self.K(X_new, X_new)
-        
+
+        @jax.jit
         def single_posterior(sigma2_vec):
             m, cov = self.posterior_mean_cov(X_new, sigma2_vec, K_new)
             return m, jnp.diag(cov)  # (n,) instead of (n, n)
-        
+
         flat_chains = jnp.concatenate(cov_chains, axis=0)
         means, vars = jax.lax.map(single_posterior, flat_chains)
         return means, vars
-        
-    # def posterior(self, X_new, cov_chains):
-    #     K_new = self.K(X_new, X_new)
-    #     flat_chains = cov_chains.reshape(-1, cov_chains.shape[-1])
-    
-    #     def accumulate(carry, sigma2_vec):
-    #         m_sum, cov_sum, count = carry
-    #         m, cov = self.posterior_mean_cov(X_new, sigma2_vec, K_new)
-    #         return (m_sum + m, cov_sum + cov, count + 1), None
-    
-    #     init = (jnp.zeros(X_new.shape[0]),
-    #             jnp.zeros((X_new.shape[0], X_new.shape[0])),
-    #             0)
-    #     (m_sum, cov_sum, count), _ = jax.lax.scan(accumulate, init, flat_chains)
-    #     return m_sum / count, cov_sum / count
-    
+
     def simulate(self, X_new, cov_chains, key=jr.PRNGKey(305)):
         K_new = self.K(X_new, X_new)
         def sample_conditional(args):
