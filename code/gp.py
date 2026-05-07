@@ -5,7 +5,31 @@ import jax.random as jr
 from functools import partial
 from sklearn.exceptions import NotFittedError
 
+import time
+
 STABILIZER = 1e-3
+
+# Timing utitlities
+
+# Global store for timestamps
+_timings = {}
+
+def _record_time(label_bytes):
+    label = label_bytes.tobytes().decode().rstrip('\x00')
+    _timings[label] = time.perf_counter()
+
+def checkpoint(label: str):
+    """Drop a timing checkpoint inside a JIT function."""
+    # Encode label as a fixed-length array so JAX can trace it
+    encoded = jnp.frombuffer(label.encode().ljust(64, b'\x00'), dtype=jnp.uint8)
+    jax.debug.callback(_record_time, encoded)
+
+def print_timings():
+    labels = list(_timings.keys())
+    for a, b in zip(labels, labels[1:]):
+        dt = (_timings[b] - _timings[a]) * 1000
+        print(f"  {a} -> {b}: {dt:.3f} ms")
+
 
 @partial(jax.jit, static_argnames=['stabilizer'])
 def stable_cholesky(M, stabilizer=STABILIZER):
@@ -44,11 +68,15 @@ def _gibbs_step(key, X_train, y_train, Sigma_0,
     cov_stabilizer: if cholesky decomp fails due to numerical issues, add diagonal matrix with cov_stabilizer
         multiply stabilizer by 10 until cholesky decomposition works
     '''
+    # checkpoint("start")
+    
     key_f, key_var_in, key_var_out = jr.split(key, 3)
 
     m_post, cov_post = p_m_cov(X_train, Sigma_0)
+    # checkpoint("f posterior update")
     sqrtCov = stable_cholesky(cov_post, stabilizer)
     f_hat = sqrtCov @ jr.normal(key_f, shape=m_post.shape, dtype=X_train.dtype) + m_post
+    # checkpoint("f posterior sample")
 
     S = (y_train - f_hat)**2
     S_in  = jnp.sum(jnp.where(X_train[:,-1], S, 0.0))
@@ -56,10 +84,12 @@ def _gibbs_step(key, X_train, y_train, Sigma_0,
 
     an_in, bn_in = update_IG_in(S_in)
     an_out, bn_out = update_IG_out(S_out)
+    # checkpoint("sigma2 posterior update")
 
     sigma2_in = bn_in / jr.gamma(key_var_in, an_in)
     sigma2_out = bn_out / jr.gamma(key_var_out, an_out)
     Sigma_0 = jnp.where(X_train[:,-1] == 1, sigma2_in, sigma2_out)
+    # checkpoint("sigma2 posterior sample")
 
     return f_hat, Sigma_0
 
