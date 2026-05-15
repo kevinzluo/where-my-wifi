@@ -26,7 +26,8 @@ def _bin_edges(values, bins, bounds):
 
     edges = np.asarray(bins, dtype=float)
     if edges.ndim != 1 or len(edges) < 2:
-        raise ValueError("bin edges must be a one-dimensional array with at least two values.")
+        raise ValueError(
+            "bin edges must be a one-dimensional array with at least two values.")
     if not np.all(np.diff(edges) > 0):
         raise ValueError("bin edges must be strictly increasing.")
     return edges
@@ -41,7 +42,34 @@ def _geographic_grid_assignments(
     lat_bounds,
     lon_bounds,
 ):
-    missing_columns = [col for col in [lat_col, lon_col] if col not in df.columns]
+    grid = _geographic_grid(
+        df,
+        lat_col,
+        lon_col,
+        lat_bins,
+        lon_bins,
+        lat_bounds,
+        lon_bounds,
+    )
+
+    row_cells = list(zip(grid["lat_grid"], grid["lon_grid"]))
+    occupied_cells = np.unique(np.column_stack(
+        [grid["lat_grid"][grid["in_grid"]],
+         grid["lon_grid"][grid["in_grid"]]]), axis=0)
+    return grid["in_grid"], row_cells, occupied_cells
+
+
+def _geographic_grid(
+    df,
+    lat_col,
+    lon_col,
+    lat_bins,
+    lon_bins,
+    lat_bounds,
+    lon_bounds,
+):
+    missing_columns = [col for col in [
+        lat_col, lon_col] if col not in df.columns]
     if missing_columns:
         raise KeyError(f"Missing column(s): {', '.join(missing_columns)}")
 
@@ -50,15 +78,19 @@ def _geographic_grid_assignments(
     if not valid_coord.any():
         raise ValueError("No rows have finite latitude and longitude values.")
 
-    lat_edges = _bin_edges(coords.loc[valid_coord, lat_col], lat_bins, lat_bounds)
-    lon_edges = _bin_edges(coords.loc[valid_coord, lon_col], lon_bins, lon_bounds)
+    lat_edges = _bin_edges(
+        coords.loc[valid_coord, lat_col], lat_bins, lat_bounds)
+    lon_edges = _bin_edges(
+        coords.loc[valid_coord, lon_col], lon_bins, lon_bounds)
 
     lat_grid = np.digitize(coords[lat_col], lat_edges, right=False) - 1
     lon_grid = np.digitize(coords[lon_col], lon_edges, right=False) - 1
 
     # Include points exactly on the upper edge in the final cell.
-    lat_grid = np.where(coords[lat_col] == lat_edges[-1], len(lat_edges) - 2, lat_grid)
-    lon_grid = np.where(coords[lon_col] == lon_edges[-1], len(lon_edges) - 2, lon_grid)
+    lat_grid = np.where(coords[lat_col] == lat_edges[-1],
+                        len(lat_edges) - 2, lat_grid)
+    lon_grid = np.where(coords[lon_col] == lon_edges[-1],
+                        len(lon_edges) - 2, lon_grid)
 
     in_grid = (
         valid_coord
@@ -70,9 +102,15 @@ def _geographic_grid_assignments(
     if not in_grid.any():
         raise ValueError("No rows fall inside the latitude/longitude grid.")
 
-    row_cells = list(zip(lat_grid, lon_grid))
-    occupied_cells = np.unique(np.column_stack([lat_grid[in_grid], lon_grid[in_grid]]), axis=0)
-    return np.asarray(in_grid), row_cells, occupied_cells
+    return {
+        "coords": coords,
+        "valid_coord": np.asarray(valid_coord),
+        "lat_edges": lat_edges,
+        "lon_edges": lon_edges,
+        "lat_grid": lat_grid,
+        "lon_grid": lon_grid,
+        "in_grid": np.asarray(in_grid),
+    }
 
 
 def _cell_mask(in_grid, row_cells, selected_cells):
@@ -81,7 +119,8 @@ def _cell_mask(in_grid, row_cells, selected_cells):
 
 
 def _valid_lonlat(df, lat_col, lon_col):
-    missing_columns = [col for col in [lat_col, lon_col] if col not in df.columns]
+    missing_columns = [col for col in [
+        lat_col, lon_col] if col not in df.columns]
     if missing_columns:
         raise KeyError(f"Missing column(s): {', '.join(missing_columns)}")
 
@@ -189,7 +228,8 @@ def geographic_kfold_split(
         lon_bounds,
     )
     if K > len(occupied_cells):
-        raise ValueError("K cannot be larger than the number of occupied grid cells.")
+        raise ValueError(
+            "K cannot be larger than the number of occupied grid cells.")
 
     rng = np.random.default_rng(random_state)
     shuffled_cells = occupied_cells[rng.permutation(len(occupied_cells))]
@@ -236,7 +276,8 @@ def leave_one_building_out_split(
         from wifiplotting import OSMPlotContext
 
         if context is None:
-            context = OSMPlotContext.from_dataframe(df, lon_col=lon_col, lat_col=lat_col)
+            context = OSMPlotContext.from_dataframe(
+                df, lon_col=lon_col, lat_col=lat_col)
         if not context.load_buildings():
             raise RuntimeError(
                 "OSM building footprints are unavailable; cannot build leave-one-building-out splits."
@@ -286,3 +327,71 @@ def leave_one_building_out_split(
         })
 
     return splits
+
+
+def bin_lat_lon(df,
+                lat_col="latitude",
+                lon_col="longitude",
+                lat_bins=30,
+                lon_bins=30,
+                lat_bounds=None,
+                lon_bounds=None,
+                ):
+    """
+    Return latitude/longitude grid assignments and bin bounds for each row.
+
+    The returned DataFrame is indexed like df for rows that fall inside the
+    grid and has four columns: lat_bin, lon_bin, lat_bounds, and lon_bounds.
+    Bounds are stored as (lower, upper) tuples for each assigned bin.
+    """
+    grid = _geographic_grid(
+        df=df,
+        lat_col=lat_col,
+        lon_col=lon_col,
+        lat_bins=lat_bins,
+        lon_bins=lon_bins,
+        lat_bounds=lat_bounds,
+        lon_bounds=lon_bounds,
+    )
+
+    in_grid = grid["in_grid"]
+    lat_grid = grid["lat_grid"][in_grid].astype(int)
+    lon_grid = grid["lon_grid"][in_grid].astype(int)
+    lat_edges = grid["lat_edges"]
+    lon_edges = grid["lon_edges"]
+
+    return pd.DataFrame({
+        "lat_bin": lat_grid,
+        "lon_bin": lon_grid,
+        "lat_bounds": list(zip(lat_edges[lat_grid], lat_edges[lat_grid + 1])),
+        "lon_bounds": list(zip(lon_edges[lon_grid], lon_edges[lon_grid + 1])),
+    }, index=df.index[in_grid])
+
+
+def binned_group_mean(df,
+                      value="rssi_sample",
+                      lat_col="latitude",
+                      lon_col="longitude",
+                      indoor_col="indoor",
+                      lat_bins=30,
+                      lon_bins=30,
+                      lat_bounds=None,
+                      lon_bounds=None,
+                      ):
+    # output needs n_obs
+    bin_df = bin_lat_lon(df, lat_col=lat_col, lon_col=lon_col,
+                         lat_bins=lat_bins, lon_bins=lon_bins,
+                         lat_bounds=lat_bounds, lon_bounds=lon_bounds)
+    working_df = pd.concat([bin_df, df], axis=1)
+
+    group_cols = [
+        indoor_col,
+        "lat_bin",
+        "lon_bin",
+        "lat_bounds",
+        "lon_bounds",
+    ]
+
+    return working_df.groupby(group_cols)[value].agg(
+        ["mean", "var", "count"]
+    ).rename(columns={"count": "n_obs"}).reset_index()
