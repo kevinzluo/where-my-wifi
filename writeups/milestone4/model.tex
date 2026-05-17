@@ -1,0 +1,102 @@
+\documentclass{article}
+\usepackage[useHeader, Override, useIndent]{../preamble}
+\usepackage{subcaption}
+
+\usepackage{dsfont}
+
+\newcommand{\bl}{\mathbf}
+\newcommand{\bs}{\boldsymbol}
+\newcommand{\new}{\mathsf{new}}
+\newcommand{\sfout}{\mathsf{out}}
+\newcommand{\sfin}{\mathsf{in}}
+\newcommand{\sfio}{\mathsf{in/out}}
+\newcommand{\sflat}{\mathsf{lat}}
+\newcommand{\sflon}{\mathsf{lon}}
+\newcommand{\sfll}{\mathsf{lat/lon}}
+\newcommand{\sfap}{\mathsf{ap}}
+\newcommand{\post}{\mathsf{post}}
+
+%%%%%%%%%% TO FILL %%%%%%%%%%
+\def\docAuthor{Jamie Liu and Kevin Luo}
+\def\docTitle{Milestone 3: Model and Inference}
+\def\docClass{STATS 305C}
+\def\docTerm{Spring 2026}
+\def\docDate{\today}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\lhead{\docAuthor}
+\chead{\docTitle}
+\rhead{\docClass}
+
+
+\usepackage{hyperref}
+
+% \setlength{\parskip}{0pt}
+% \setlength{\parindent}{15pt}
+
+\usepackage{titlesec}
+
+% \titlespacing*{\section}{0pt}{0.5ex}{0.5ex}
+% \titlespacing*{\subsection}{0pt}{0.25ex}{0.25ex}
+% \titlespacing*{\paragraph}{0pt}{0pt}{0.75em}
+
+% Space around figures/tables
+\setlength{\textfloatsep}{0.75em} % between top/bottom floats and text
+\setlength{\floatsep}{0.75em}     % between two floats
+\setlength{\intextsep}{0.75em}    % between in-text floats and text
+
+\begin{document}
+
+\section{Model}
+
+Data: $(x_i, y_i, z_i, t_i)$
+\begin{itemize}
+    \item $(x_i, y_i) \in [0,1]^2$: normalized longitude, latitude
+    \item $z_i \in \{0, 1\}$: indoor/outdoor indicator, $1 = $ indoor
+    \item $t \in [0, 1]$: normalized observation timestamp
+\end{itemize}
+Target: $r_i \in [0, 1]$: normalized RSSI
+
+\medskip
+
+Model setup:
+\begin{align*}
+    \sigma^2_0, \sigma^2_1 &\iid \text{Inv-}\Gam(0, 0) \\
+    f &\sim \GP(m, \K) \\
+    r_i \mid f, \sigma^2_{z_i} &\sim \N(f(x_i, y_i, z_i, t_i), \sigma^2_{z_i})
+\end{align*}
+where $m(x_i, y_i, z_i, t_i) = \mean(r_j : z_j = z_i)$ is the sample group mean, and $\K = \K_{xyz} + \K_t$, where each is a Matern kernel with $5/2$ degrees of freedom with its own lengthscale and outputscale parameter.
+
+\medskip
+
+Fitting: What Python software would be best to do the following?
+\begin{enumerate}
+    \item Fit Matern kernel parameters and $\sigma_0^2, \sigma_1^2$ initializations by maximizing marginal likelihood. What should the initial values of the parameters be for the optimizer? How can we guarantee fast-ish convergence to a good solution?
+
+    \item At the fixed Matern kernel parameters, use the optimal $\sigma_0^2, \sigma_1^2$ as initializations to compute their posterior distributions.
+
+    \item Predict $r^*$ on a grid of future points. Optionally restrict to $\K^* = \K_{xy} + \K_z$ so that new observations are temporally uncorrelated with original data and each other.
+\end{enumerate}
+
+\section{The Slindermodel}
+Let
+\begin{align*}
+    \varphi(x; \mu, \Sigma, w, b) := b + w \exp\left(-\frac{1}{2} (x - \mu)^\top \Sigma^{-1} (x - \mu) \right).
+\end{align*}
+
+Our observed data takes the form $\{(x_i, y_i)\}_{i = 1} ^n$, where $y_i$ is the measured RSSI and $x_i = (x_{i,\sflat}, x_{i,\sflon}, x_{i,\sfio}, x_{i,\sfap})$. 
+
+Here $x_{i,\sfap} \in \{1, \dots K\}$ is the index of an access point. The access points themselves them posses parameters $\theta_a = (b_a, w_a, \mu_a, \Sigma_a)$ which govern their strength and decay. Our generative model is then as follows.
+\begin{align*}
+    c_a \sim \mathrm{Cat}(\pi_a)  \qquad \mu_a \mid c_a = g \sim \Unif(B_g) \\
+    b_a \mid m_b, s_g \sim \N(m_b, s_g^2) \\
+    \log w_a  \mid m_w, s_w \sim \N(m_w, s_w^2) \\
+    \log \ell_a \mid m_\ell, s_\ell \sim \N(m_\ell, s_\ell^2) \\
+    \Sigma_a = \begin{bmatrix}
+        \ell_a^2 I_{2} & 0 \\
+        0 & \frac{1}{2}\gamma^{-1}
+    \end{bmatrix} \\
+    \gamma \sim \sigma_\gamma \\
+    \tau \sim \sigma_\tau
+\end{align*}
+\end{document}
