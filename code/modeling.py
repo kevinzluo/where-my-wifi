@@ -377,8 +377,11 @@ def binned_group_mean(df,
                       lon_bins=30,
                       lat_bounds=None,
                       lon_bounds=None,
+                      extra_groups=None,
                       ):
     # output needs n_obs
+    if extra_groups is None:
+        extra_groups = []
     bin_df = bin_lat_lon(df, lat_col=lat_col, lon_col=lon_col,
                          lat_bins=lat_bins, lon_bins=lon_bins,
                          lat_bounds=lat_bounds, lon_bounds=lon_bounds)
@@ -392,6 +395,6 @@ def binned_group_mean(df,
         "lon_bounds",
     ]
 
-    return working_df.groupby(group_cols)[value].agg(
+    return working_df.groupby([*group_cols, *extra_groups])[value].agg(
         ["mean", "var", "count"]
     ).rename(columns={"count": "n_obs"}).reset_index()
