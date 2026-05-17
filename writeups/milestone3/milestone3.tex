@@ -26,32 +26,41 @@
 
 \usepackage{hyperref}
 
-\setlength{\parskip}{0pt}
-\setlength{\parindent}{15pt}
+% \setlength{\parskip}{0pt}
+% \setlength{\parindent}{15pt}
+
+\usepackage{titlesec}
+
+% \titlespacing*{\section}{0pt}{0.5ex}{0.5ex}
+% \titlespacing*{\subsection}{0pt}{0.25ex}{0.25ex}
+% \titlespacing*{\paragraph}{0pt}{0pt}{0.75em}
+
+% Space around figures/tables
+\setlength{\textfloatsep}{0.75em} % between top/bottom floats and text
+\setlength{\floatsep}{0.75em}     % between two floats
+\setlength{\intextsep}{0.75em}    % between in-text floats and text
 
 \begin{document}
 \setcounter{section}{-1}
-
 \section{The Generative Model}\label{sec:gen-model}
-
 
 We operate in a fixed-design setup where we observe pairs $\{(\bl{x}_i, y_i)\}_{i = 1} ^n$, with the covariates $\bl{x}_i$ nonrandom. Here the covariates include latitude, longitude, access points, and whether we are indoors or outdoors. The measured WiFi statistics $y_i$ are generated jointly from the $\bl{x}_i$ according to the hierarchical structure below\footnote{Inverse Gamma here is parameterized as $p(x) \propto x^{-\alpha - 1}\exp(-\beta/x)$.}:
 \begin{align*}
-    &f \sim \mathcal{GP}(m, K) \qquad \sigma_\mathsf{in}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{in}}, \beta_{0,\mathsf{in}}) \qquad \sigma_\mathsf{out}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{out}}, \beta_{0,\mathsf{out}}) \\
+    &f \sim \mathcal{GP}(m, \K) \qquad \sigma_\mathsf{in}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{in}}, \beta_{0,\mathsf{in}}) \qquad \sigma_\mathsf{out}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{out}}, \beta_{0,\mathsf{out}}) \\
     &s_i \equiv s_i(\bl{x}_i) := \begin{cases}
     \mathsf{in} &\text{if } \mathbf{x}_{i,\mathsf{is\_in}} = 1 \\
     \mathsf{out} &\text{if } \mathbf{x}_{i,\mathsf{is\_in}} = 0 \\
-    \end{cases} \qquad \epsilon_i \mid \tau_i^2, \bl{x}_i \sim_{\mathsf{ind.}} \N(0, \sigma_{s_i}^2) \\
+    \end{cases} \qquad \epsilon_i \mid \tau_i^2, \bl{x}_i \inddis \N(0, \sigma_{s_i}^2) \\
     &y_i \mid \epsilon_i, \bl{x}_i = f(\bl{x}_i) + \epsilon_i
 \end{align*}
 
-\paragraph{Prior mean and covariance.} We try several settings for the prior mean and covariance $m$ and $K$. In all setups, the covariance kernel is parameterized as $K(\bl{x}_1, \bl{x}_2) = \exp\left\{-\mathsf{d}(\bl{x}_1, \bl{x}_2)/b \right\}$,
-where $b$ is a hyperparameter governing correlation decay.
+\paragraph{Prior mean and covariance.} We try several settings for the prior mean and covariance $m$ and $\K$. In all setups, the covariance kernel is parameterized as $\K(\bl{x}_1, \bl{x}_2) = a \exp\left\{-\mathsf{d}(\bl{x}_1, \bl{x}_2)/b \right\}$,
+where $a$ and $b$ are hyperparameters governing correlation decay.
 \begin{itemize}
     \setlength{\itemsep}{0ex}
     % \setlength{\parskip}{0ex}
     % \itemsep0em
-    \item \textsf{baseline}: As a baseline, set $m$ to be constant and set $K$ to only depend on the latitude and longitude of observed points. The prior mean is set to be the global mean\footnote{We are aware that making these data dependent violates the uncertainty guarantees -- once we have more data, we plan to set aside a small portion for prior mean estimation.}. That is, we set $m(\bl{x}) = \overline{y}$ and parameterize the distance function in the covariance kernel as $\mathsf{d}(\bl{x}_1, \bl{x}_2) = \|(x_{1,\mathsf{lat}}, x_{1,\mathsf{lon}}) - (x_{2,\mathsf{lat}}, x_{2,\mathsf{lon}})\|_2^2$. 
+    \item \textsf{baseline}: As a baseline, set $m$ to be constant and set $\K$ to only depend on the latitude and longitude of observed points. The prior mean is set to be the global mean\footnote{We are aware that making these data dependent violates the uncertainty guarantees -- once we have more data, we plan to set aside a small portion for prior mean estimation.}. That is, we set $m(\bl{x}) = \overline{y}$ and parameterize the distance function in the covariance kernel as $\mathsf{d}(\bl{x}_1, \bl{x}_2) = \|(x_{1,\mathsf{lat}}, x_{1,\mathsf{lon}}) - (x_{2,\mathsf{lat}}, x_{2,\mathsf{lon}})\|_2^2$. 
 
     \item \textsf{mean-in/out}: Our data analysis from last week revealed whether the sample is taken indoors or outdoors has a large effect on the signal strength; as such, we next make the mean aware of this covariate, setting the prior mean to be the mean of all indoor samples for indoor points, and to the mean of all outdoor samples for outdoor points. That is, $m(\bl{x}_i) = \overline{y_{s_i}}$.
     \item \textsf{mean-cov-in/out}: Our third attempt further adds indoor/outdoor as a feature to the distance governing the covariance kernel, setting $\mathsf{d}(\bl{x}_1, \bl{x}_2) = \|(x_{1,\mathsf{lat}}, x_{1,\mathsf{lon}}, x_{1,\mathsf{is\_in}}) - (x_{2,\mathsf{lat}}, x_{2,\mathsf{lon}}, x_{2,\mathsf{is\_in}})\|_2^2$
@@ -82,7 +91,7 @@ We use Gibbs sampling to draw from the distribution, since the posterior does no
     %     m(\bl{x}_n)
     % \end{pmatrix}
     \\
-    \bl{K}(\bl{X},\bl{X'}) = (K(\bl{x}_i, \bl{x}'_j))_{i,j = 1}^n \in \R^{n \times n'} 
+    \bl{K}(\bl{X},\bl{X'}) = (\K(\bl{x}_i, \bl{x}'_j))_{i,j = 1}^n \in \R^{n \times n'} 
     &\qquad 
     \bs\Sigma_{\sigma} = \mathsf{diag}(\sigma_{s_1}^2, \cdots, \sigma_{s_n}^2) \in \R^{n \times n}
 \end{align*}
@@ -94,7 +103,7 @@ The two conditionals of interest have closed forms which are given as follows. F
     \qquad
     \bs\mu_f = \bs\Sigma_f(\bl{K}_\bl{X}^{-1} \bl{m}_\bl{X} + \bs\Sigma^{-1}_\sigma\bl{y}).
 \end{align*}
-Now conditional on $\bl{f}$, this becomes an NIX problem. Thus, for each $\mathsf{g} \in \{\mathsf{in}, \mathsf{out}\}$, we have
+Now conditional on $\bl{f}$, this becomes a NIX problem. Thus, for each $\mathsf{g} \in \{\mathsf{in}, \mathsf{out}\}$, we have
 \begin{align*}
     \sigma^2_\mathsf{g} \mid \bl{y}, \bl{f} &\sim \mathrm{InvGamma}(\alpha_{n, \mathsf{g}}, \beta_{n, \mathsf{g}}) \qquad \alpha_{n, \mathsf{g}} = \alpha_{0, \mathsf{g}} + \frac{n_\mathsf{g}}{2} \qquad \beta_{n, \mathsf{g}} = \beta_{0, \mathsf{g}} + \frac{1}{2} \sum_{i \in S_{\mathsf{in}}}(y_i - f_i)^2.
 \end{align*}
@@ -109,39 +118,49 @@ Now to draw posterior samples of other points $\bl{X}_\new$ on the grid, we use
 \begin{figure}
     \centering
     \hfill
-    \begin{subfigure}{0.45\textwidth}
-        % \includegraphics[width=\linewidth]{}
+    \begin{subfigure}{0.23\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{plots/variance_traceplots.pdf}
         \caption{Trace plots for $\sigma^2_{\sfin,\sfout}$}
         \label{fig:trace}
     \end{subfigure}
     \hfill
-    \begin{subfigure}{0.45\textwidth}
-        \includegraphics[width=\linewidth]{writeups/milestone3/knnplot.pdf}
-        \caption{KNN baseline, with parameters $k = 67$ (selected via Cross-Validation) }
-        \label{fig:knn}
-    \end{subfigure}
-    \begin{subfigure}{0.95\textwidth}
-        \caption{Posterior means for various settings listed in Section~\ref{sec:gen-model}. From left to right, \textsf{baseline}, \textsf{mean-in/out}, \textsf{mean-cov-in/out}.}
+    \begin{subfigure}{0.5\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{plots/gp_heatmaps.pdf}
+        \caption{Posterior means for various settings listed in Section~\ref{sec:gen-model}.}
         \label{fig:posts}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.23\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{writeups/milestone3/knnplot.pdf}
+        \caption{KNN baseline ($k = 67$)}
+        \label{fig:knn}
     \end{subfigure}
     % \caption{Caption}
     % \label{fig:}
 \end{figure}
 
 \subsection{Convergence}
-To check convergence of the Gibbs sampler, we look at the trace plots of $\sigma^2_\sfin$ and $\sigma^2_\sfout$. We run $M$ chains each with $K$ steps and observe the plots in Figure~\ref{fig:trace}, which show low autocorrelation. For $\bl{f}$, we measure the Gelman-Rubin statistic, which roughly quantifies the difference between in-chain variance and the variance across chains. We observe that all of our statistics are close to $1$, indicating convergence.
+To check convergence of the Gibbs sampler, we look at the trace plots of $\sigma^2_\sfin$ and $\sigma^2_\sfout$. We run $1$ chain for $1000$ steps and observe the plots in Figure~\ref{fig:trace}, which show low autocorrelation. For $\bl{f}$, we measure the Gelman-Rubin statistic, which roughly quantifies the difference between in-chain variance and the variance across chains. For example, for the location only setting, we drew 10 chains of length 100 and observed that the maximum statistic over all of the new prediction points was $1.01 \ll 1.1$, indicating convergence.
 
 \subsection{Posterior visualization}
 
-We show in Figure~\ref{fig:posts} the plots of the posterior means for each of the three settings of our Gibbs sampler as described in Section~\ref{sec:gen-model}. We also fit a simple KNN as another baseline (in Figure~\ref{fig:knn}). For now, our comparison is based on are looking at how well the posterior mean interpolates the datapoints. 
+We show in Figure~\ref{fig:posts} the plots of the posterior means for each of the three settings of our Gibbs sampler as described in Section~\ref{sec:gen-model}. We also fit a simple KNN as another baseline (in Figure~\ref{fig:knn}). These results seem to show that the data variance is quite high, and the speed at which WiFi strength drops off can be quite fast (see the East side of CoDa). It also shows that there are indoor areas which have weak WiFi strength (such as in Gates). While on average we observe that indoor WiFi strength is stronger, this trend isn't very consistent across space (though one can still see the outlines of buildings in the baseline). 
 
-For the future, we plan on more numerical quantifications of how well our process fits the data in order to perform hyperparameter tuning. Our main plan is to compare likelihoods of held-out datapoints. Our train/test split process will be to discretize the latitude-longitude grid and assign grid cells to either the training set or test set. Similar ideas can then be used to build cross-validation pipelines. This will then allow us to measure how well our process generalizes to unseen areas of campus. 
+For now, our comparison on which fit is better is based on are looking at how well the posterior mean interpolates the datapoints. It's very unclear whether our added complexity improves the fit compared to the KNN or the baseline, especially because the plots cannot quantify the posterior variance. However, we haven't spent much time tuning hyperparameters.
+
+For the future, we plan on more numerical quantifications of how well our process fits the data in order to perform hyperparameter tuning. Our main plan is to compare posterior likelihoods of held-out datapoints. Our train/test split process will be to discretize the latitude-longitude grid and assign grid cells to either the training set or test set. Similar ideas can then be used to build cross-validation pipelines. This will then allow us to measure how well our process generalizes to unseen areas of campus. 
 \newpage
 \appendix
 
 \section{Modification of Data Collection}
 
 These two weeks, we made a point to gather more indoor datapoints, since the previous dataset was mostly outdoor data. Furthermore, we started over, since the old CoreLocation location data proved to be too coarse to be useful. Now all locations are based off iPhone GPS location. We also learned that iPhone GPS location when connected to WiFi is much worse than when connected to data only. However, even when connected to data, indoor location accuracy is quite poor, so we further built a GUI to manually correct datapoints based on the path taken indoors. We now have 5,000 new datapoints of only the Sequoia area, with roughly half of the points taken indoors. 
+
+\section{AI Statement}
+ChatGPT was used to help compute the closed-form conditional distributions. It was also used heavily to generate the location correction UI, as well as most plotting utilities. The Gibbs sampler was written by hand, with very minor debugging assistance from Claude.
 
 
 \end{document}

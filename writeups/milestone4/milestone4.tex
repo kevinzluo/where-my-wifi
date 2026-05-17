@@ -1,0 +1,137 @@
+\documentclass{article}
+\usepackage[useHeader, Override, useIndent]{../preamble}
+\usepackage{subcaption}
+
+\usepackage{dsfont}
+
+\newcommand{\bl}{\mathbf}
+\newcommand{\bs}{\boldsymbol}
+\newcommand{\new}{\mathsf{new}}
+
+\newcommand{\sfout}{\mathsf{out}}
+\newcommand{\sfin}{\mathsf{in}}
+\newcommand{\sfio}{\mathsf{in/out}}
+\newcommand{\sflat}{\mathsf{lat}}
+\newcommand{\sflon}{\mathsf{lon}}
+\newcommand{\sfll}{\mathsf{lat/lon}}
+\newcommand{\sfap}{\mathsf{ap}}
+\newcommand{\post}{\mathsf{post}}
+
+%%%%%%%%%% TO FILL %%%%%%%%%%
+\def\docAuthor{Jamie Liu and Kevin Luo}
+\def\docTitle{Milestone 4: Criticism and Revision}
+\def\docClass{STATS 305C}
+\def\docTerm{Spring 2026}
+\def\docDate{\today}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\lhead{\docAuthor}
+\chead{\docTitle}
+\rhead{\docClass}
+
+
+\usepackage{hyperref}
+
+% \setlength{\parskip}{0pt}
+% \setlength{\parindent}{15pt}
+
+\usepackage{titlesec}
+
+% \titlespacing*{\section}{0pt}{0.5ex}{0.5ex}
+% \titlespacing*{\subsection}{0pt}{0.25ex}{0.25ex}
+% \titlespacing*{\paragraph}{0pt}{0pt}{0.75em}
+
+% Space around figures/tables
+\setlength{\textfloatsep}{0.75em} % between top/bottom floats and text
+\setlength{\floatsep}{0.75em}     % between two floats
+\setlength{\intextsep}{0.75em}    % between in-text floats and text
+
+\begin{document}
+
+\setcounter{section}{-1}
+
+\section{Model Improvements}
+
+We spent the past two weeks mainly working on three new directions that were not explored in our previous model: temporal correlations, GP model tuning (including sensitivity analysis), and access point modeling.
+
+\subsection{Temporal Correlation}
+
+Our primary model is the following Gaussian process.
+\begin{align*}
+    &f \sim \mathcal{GP}(m, \K) \qquad \sigma_\mathsf{in}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{in}}, \beta_{0,\mathsf{in}}) \qquad \sigma_\mathsf{out}^2 \sim \mathrm{InvGamma}(\alpha_{0,\mathsf{out}}, \beta_{0,\mathsf{out}}) \\
+    &s_i \equiv s_i(\bl{x}_i) := \begin{cases}
+    \mathsf{in} &\text{if } \mathbf{x}_{i,\mathsf{is\_in}} = 1 \\
+    \mathsf{out} &\text{if } \mathbf{x}_{i,\mathsf{is\_in}} = 0 \\
+    \end{cases} \qquad \epsilon_i \mid \sigma_i^2, \bl{x}_i \inddis \N(0, \sigma_{s_i}^2) \\
+    &y_i \mid \epsilon_i, \bl{x}_i = f(\bl{x}_i) + \epsilon_i
+\end{align*}
+
+We have modified our covariance kernel to be $\K = \K_{\sflat, \sflon, \sfio} + \K_t$, where $\K_{\sflat, \sflon, \sfio}$ is a kernel on the longitude, latitude, and indoor/outdoor, and $\K_t$ is a kernel on the measurement timestamp. This formulation accounts for the correlation between consecutive samples along Kevin's sample paths. Each is an RBF kernel with its own outputscale, and each parameter has its own lengthscale.
+
+We chose an additive kernel for time because we want temporally distant observations to have no temporal correlation, but we don't want this to affect the geospatial correlation. If we had a single kernel, the temporal effect would be a multiplicative factor of the total covariance, but with an additive kernel, we can safely send the temporal covariance to zero without killing the geospatial covariance.
+
+\subsection{GP Model Tuning}
+
+As Gaussian process inference is quite sensitive to the kernel parameter settings, we spent a considerable amount of time and effort tuning the outputscales and lengthscales.
+
+Our first attempt was to optimize the marginal log-likelihood with respect to the $\sigma^2_\sfio$ and the kernel parameters using the \texttt{GPytorch} library, then fix the kernel parameters when running our Gibbs sampler to find the posterior of $\sigma^2_\sfio$. This ended up being very unstable; the optimizer seemed to always move toward degenerate solutions that increased marginal likelihood but resulted in nonsensical inference.
+
+The next method was to create a validation data split, and use the MSE of our Gibbs sampler posterior estimate as an evaluation metric to conduct a grid search over reasonable kernel parameter settings. Our current best parameters, which gave a validation MSE of $60.4$, are used for the visualization included in this writeup, but we plan to continue tuning further. Note that a KNN baseline (CV fit neighbors = 10) had a validation MSE of $76.6$.
+
+We also checked the sensitivity to the priors on $\sigma^2_\sfio$. We observed that posterior inference was highly robust to this choice, as the data easily overwhelmed all but the most unreasonably overconfident priors.
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.4\linewidth]{writeups/milestone4/images/milestone-4-plot-2.png}%
+    \caption{Placeholder for Jamie.}
+    \label{fig:placeholder}
+\end{figure}
+
+\subsection{Access points (the Slindermodel)}
+After discussions with Scott, we designed a new generative model that bakes in priors about the functional form of WiFi strength decay away from access points. Our data takes the form $\{(x_i, y_i)\}_{i = 1} ^n$, where $y_i$ is the measured RSSI and $x_i = (x_{i,\sflat}, x_{i,\sflon}, x_{i,\sfio}, x_{i,\sfap})$. Here $x_{i,\sfap} \in \{1, \dots K\}$ is the index of an access point. The access points themselves them posses parameters $\theta_a = (b_a, w_a, \mu_a, \Sigma_a)$ which govern their strength and decay. 
+Then let
+\begin{align*}
+    \varphi(x; \mu, \Sigma, w, b) := b + w \exp\left(-\frac{1}{2} (x - \mu)^\top \Sigma^{-1} (x - \mu) \right).
+\end{align*}
+We model $y = \varphi(x; \mu_k, \Sigma_k, w_k, b_k) + \varepsilon$, where $\varepsilon \sim \N(0, \tau^2)$. One can further impose priors on $b_a, w_a$ and $\Sigma_a$ and try to understand their posteriors, which we have plans for, but were not able to implement in this time. We require that $\Sigma$, which defines an inner product over latitude, longitude, and indoor/outdoor, be of the form $\begin{bmatrix}
+    \ell_a^2 I_2 & 0 \\
+    0 & \frac{1}{2} \gamma^{-1}
+\end{bmatrix}$.
+
+However, as a baseline, we did try optimizing this model to see what kind of outputs it can produce, and to get a rough sense of how it can compare to the generative approach above. The main issues this approach runs into is that access points with few observations cannot have a well-defined fit, and as such we have to drop all of these access points. However, once we incorporate priors we expect this to be less of an issue. 
+
+We evaluate this approach by a stratified train-test split, where we take 80\% of the datapoints within each access point for the training set, and 20\% for the test set. We then filter to only access points which have sufficient data (which we take to be 8 unique geographic points), and measure the mean squared error of this model, which we found to be 33.5\footnote{Note that this number is entirely incomparable to the one for the other model, since the train-test split scheme is entirely different, the access points are filtered; furthermore, this model has no regularization from a prior, and no uncertainty quantification. We expect adding these features to increase its MSE. Finally the train-test split methodology is quite questionable, and we plan to also measure against one where we drop out geographic chunks instead.}. In Figure~\ref{fig:slindermodel}, we show some plots showing some access points with a lot of observations alongside their fit (since the function fit more or less decomposes among access points). However, comparing this to a KNN which is also fit per access point with the same train test splits, the KNN actually does far better, with an MSE of 15. 
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.4\linewidth]{writeups/milestone4/images/milestone-4-plot-2.png}%
+    \caption{The plot shows the function fit for one of the access points. The blue dot shows the fitted mean (the inferred location of the access point, which is in the middle of the field. This seems unlikely, and we can mitigate this kind of behavior with a prior).}
+    \label{fig:slindermodel}
+\end{figure}
+
+% \begin{align*}
+%     c_a \sim \mathrm{Cat}(\pi_a)  \qquad \mu_a \mid c_a = g \sim \Unif(B_g) \\
+%     b_a \mid m_b, s_g \sim \N(m_b, s_g^2) \\
+%     \log w_a  \mid m_w, s_w \sim \N(m_w, s_w^2) \\
+%     \log \ell_a \mid m_\ell, s_\ell \sim \N(m_\ell, s_\ell^2) \\
+%     \Sigma_a = \begin{bmatrix}
+%         \ell_a^2 I_{2} & 0 \\
+%         0 & \frac{1}{2}\gamma^{-1}
+%     \end{bmatrix} \\
+%     \gamma \sim \sigma_\gamma \\
+%     \tau \sim \sigma_\tau
+% \end{align*}
+
+
+\newpage
+\appendix
+\section{Data Collection}
+
+We collected another $\sim$3000 datapoints (bringing the total to $\sim$8000), mainly from unsurveyed places such as the Oval (where there surprisingly is WiFi signal), the center of the quad, and the areas to the west of the Physics buildings. As each step of the Gibbs sampler takes cubic time in the dimension count, this made sampling prohibitively slow, especially for the tuning we wanted to try. As such, we aggregated measurement sets to start (recall each measurement set contains 3 datapoints), taking the mean of the non-null RSSIs in the set, and recording the number of non-null observations. The aggregation was accounted for when running the Gibbs sampler by weighting the training datapoints correspondingly.
+
+
+\section{AI Statement}
+ChatGPT was used extensively to help write boilerplate to optimize the Slindermodel, as well as formulate a generative priors for the Slindermodel, though those portions were not contained in this report, as we did not have time to fit them. Claude was used to help write marginal likelihood optimization code in \texttt{GPytorch}, as well as some small snippets in the other GP tuning code. Claude was also used to help write a custom job scheduler to accelerate experiments on our local machine.
+
+
+
+\end{document}
