@@ -2,3 +2,4 @@
 **/__pycache__/
 data/wifi_raw
 data/wifi_raw.jsonl
+code/gridsearch/results
