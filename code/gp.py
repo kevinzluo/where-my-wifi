@@ -131,7 +131,7 @@ class GaussianProcess():
 
         return gibbs_chains
 
-    def predict(self, X_new, cov_chains):
+    def predict(self, X_new, cov_chains, method='parallel'):
         K_new = self.K(X_new, X_new)
         Kn_new = self.K(self.X_train, X_new)
 
@@ -141,5 +141,8 @@ class GaussianProcess():
             return m, jnp.diag(cov)  # (n,) instead of (n, n)
 
         flat_chains = jnp.concatenate(cov_chains, axis=0)
-        means, vars = jax.vmap(single_posterior)(flat_chains)
+        if method == 'parallel':
+            means, vars = jax.vmap(single_posterior)(flat_chains)
+        elif method == 'sequential':
+            means, vars = jax.lax.map(single_posterior, flat_chains)
         return means, vars
