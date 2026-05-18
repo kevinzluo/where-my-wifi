@@ -46,7 +46,7 @@ def m(obs):
 def K(obs1, obs2):
     d_xyz = (obs1[:3] - obs2[:3])**2
     d_t = (obs1[3] - obs2[3])**2
-    return os_xyz * jnp.exp(- (d_xyz / ls_xyz**2).sum()) + \
+    return os_xyz * jnp.exp(- (d_xyz / (2*ls_xyz**2)).sum()) + \
         os_t * jnp.exp(- d_t / (2*ls_t**2))
 
 ### RUN GP ###

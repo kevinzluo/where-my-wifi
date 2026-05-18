@@ -132,8 +132,9 @@ class GaussianProcess():
         return gibbs_chains
 
     def predict(self, X_new, cov_chains, method='parallel'):
-        K_new = self.K(X_new, X_new)
-        Kn_new = self.K(self.X_train, X_new)
+        # note: set t_new to be infinity to kill temporal covariance
+        K_new = self.K(X_new, X_new.at[:,3].set(jnp.inf))
+        Kn_new = self.K(self.X_train, X_new.at[:,3].set(jnp.inf))
 
         @jax.jit
         def single_posterior(variances):
