@@ -19,6 +19,8 @@ def _gibbs_step(key, X_train, y_train, variances, obs_count,
     # eigvals_safe = jnp.maximum(eigvals, 0.0)   # clip negative eigenvalues
     # f_hat = eigvecs @ (jnp.sqrt(eigvals_safe) * jr.normal(key_f, shape=eigvals.shape, dtype=X_train.dtype)) + m_post
 
+    # REMARK: set jitter to be just larger than the magnitude of the smallest negative eigenvalue of cov_post
+    # ---> for fp32, use 1e-3. For fp64, use 1e-10 or 1e-11
     f_hat = jr.multivariate_normal(key_f, m_post, cov_post + jnp.eye(cov_post.shape[0]) * 1e-3, method='cholesky')
 
     S = (y_train - f_hat)**2
