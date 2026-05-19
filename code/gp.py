@@ -14,9 +14,12 @@ def _gibbs_step(key, X_train, y_train, variances, obs_count,
     key_f, key_var_in, key_var_out = jr.split(key, 3)
 
     m_post, cov_post = p_m_cov(X_train, variances)
-    eigvals, eigvecs = jnp.linalg.eigh(cov_post)
-    eigvals_safe = jnp.maximum(eigvals, 0.0)   # clip negative eigenvalues
-    f_hat = eigvecs @ (jnp.sqrt(eigvals_safe) * jr.normal(key_f, shape=eigvals.shape, dtype=X_train.dtype)) + m_post
+
+    # eigvals, eigvecs = jnp.linalg.eigh(cov_post)
+    # eigvals_safe = jnp.maximum(eigvals, 0.0)   # clip negative eigenvalues
+    # f_hat = eigvecs @ (jnp.sqrt(eigvals_safe) * jr.normal(key_f, shape=eigvals.shape, dtype=X_train.dtype)) + m_post
+
+    f_hat = jr.multivariate_normal(key_f, m_post, cov_post + jnp.eye(cov_post.shape[0]) * 1e-3, method='cholesky')
 
     S = (y_train - f_hat)**2
     S_in  = jnp.sum(jnp.where(X_train[:,2], S, 0.0) * obs_count)
@@ -141,9 +144,11 @@ class GaussianProcess():
             m, cov = self.posterior_mean_cov(X_new, variances, K_new, Kn_new)
             return m, jnp.diag(cov)  # (n,) instead of (n, n)
 
-        flat_chains = jnp.concatenate(cov_chains, axis=0)
         if method == 'parallel':
+            flat_chains = jnp.concatenate(cov_chains, axis=0)
             means, vars = jax.vmap(single_posterior)(flat_chains)
         elif method == 'sequential':
-            means, vars = jax.lax.map(single_posterior, flat_chains)
+            batch_means, batch_vars = jax.vmap(lambda chain: jax.lax.map(single_posterior, chain))(cov_chains)
+            means = jnp.concatenate(batch_means, axis=0)
+            vars = jnp.concatenate(batch_vars, axis=0)
         return means, vars
