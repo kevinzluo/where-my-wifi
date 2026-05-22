@@ -6,7 +6,7 @@ from functools import partial
 from sklearn.exceptions import NotFittedError
 
 @partial(jax.jit, static_argnames=['p_m_cov', 'update_IG_in', 'update_IG_out'])
-def _gibbs_step(key, X_train, y_train, variances, obs_count,
+def _gibbs_step(key, X_train, y_train, variances, obs_count, obs_sse,
                p_m_cov, update_IG_in, update_IG_out):
     '''
     key: jax.random key
@@ -23,9 +23,10 @@ def _gibbs_step(key, X_train, y_train, variances, obs_count,
     # ---> for fp32, use 1e-3. For fp64, use 1e-10 or 1e-11
     f_hat = jr.multivariate_normal(key_f, m_post, cov_post + jnp.eye(cov_post.shape[0]) * 1e-3, method='cholesky')
 
-    S = (y_train - f_hat)**2
-    S_in  = jnp.sum(jnp.where(X_train[:,2], S, 0.0) * obs_count)
-    S_out = jnp.sum(jnp.where(1-X_train[:,2], 0.0, S) * obs_count)
+    S = obs_sse + obs_count * (y_train - f_hat)**2
+    mask_in = X_train[:,2] == 1
+    S_in  = jnp.sum(jnp.where(mask_in, S, 0.0))
+    S_out = jnp.sum(jnp.where(mask_in, 0.0, S))
 
     an_in, bn_in = update_IG_in(S_in)
     an_out, bn_out = update_IG_out(S_out)
@@ -46,10 +47,12 @@ class GaussianProcess():
 
         self.trained = False
 
-    def fit(self, X_train, y_train, obs_count=None, variances=None, priors=jnp.full(4, jnp.nan)):
+    def fit(self, X_train, y_train, obs_count=None, variances=None, priors=jnp.full(4, jnp.nan), obs_sse=None):
         '''
         X_train : n x d array
         y_train : n x 1 array
+        obs_count : number of raw observations averaged into each y_train entry
+        obs_sse : within-location sum of squared errors for each aggregated y_train entry
 
         Sigma_0 : x_i -> error variance initial setting
         priors : inverse gamma hyperparameters for indoor/outdoor components, a0_out, b0_out, a0_in, b0_in
@@ -76,13 +79,14 @@ class GaussianProcess():
 
         self.mask_in = (self.X_train[:,2] == 1)
         self.obs_count = jnp.ones(X_train.shape[0]) if (obs_count is None) else obs_count
+        self.obs_sse = jnp.zeros(X_train.shape[0]) if (obs_sse is None) else obs_sse
         self.n_out = ((self.X_train[:,2] == 0) * self.obs_count).sum()
         self.n_in = ((self.X_train[:,2] == 1) * self.obs_count).sum()
 
         def update_IG_out(S_out):
-            return self.IG_priors[0] + self.n_out/2, self.IG_priors[3] + S_out/2
+            return self.IG_priors[0] + self.n_out/2, self.IG_priors[1] + S_out/2
         def update_IG_in(S_in):
-            return self.IG_priors[2] + self.n_in/2, self.IG_priors[1] + S_in/2
+            return self.IG_priors[2] + self.n_in/2, self.IG_priors[3] + S_in/2
 
         @jax.jit
         def posterior_mean_cov(X_new, variances, K_new, Kn_new):
@@ -110,7 +114,8 @@ class GaussianProcess():
         if not self.trained:
             raise NotFittedError("This Gaussian Process instance has not been fitted.")
 
-        gibbs_step = partial(_gibbs_step, X_train=self.X_train, y_train=self.y_train, obs_count=self.obs_count,
+        gibbs_step = partial(_gibbs_step, X_train=self.X_train, y_train=self.y_train,
+                obs_count=self.obs_count, obs_sse=self.obs_sse,
                 p_m_cov=partial(self.posterior_mean_cov, K_new=self.Kn, Kn_new=self.Kn),
                                 update_IG_in=self.update_IG_in, update_IG_out=self.update_IG_out)
 
@@ -126,13 +131,13 @@ class GaussianProcess():
         self.f_hat = gibbs_chains[0][-1, -1]
         self.variances = gibbs_chains[1][-1, -1]
 
-        S = (self.y_train - self.f_hat)**2
-        S_in  = jnp.sum(jnp.where(self.X_train[:,2], S, 0.0) * self.obs_count)
-        S_out = jnp.sum(jnp.where(self.X_train[:,2], 0.0, S) * self.obs_count)
+        S = self.obs_sse + self.obs_count * (self.y_train - self.f_hat)**2
+        S_in  = jnp.sum(jnp.where(self.mask_in, S, 0.0))
+        S_out = jnp.sum(jnp.where(self.mask_in, 0.0, S))
 
         an_in, bn_in = self.update_IG_in(S_in)
         an_out, bn_out = self.update_IG_out(S_out)
-        self.IG_posteriors= jnp.array([an_in, bn_in, an_out, bn_out])
+        self.IG_posteriors= jnp.array([an_out, bn_out, an_in, bn_in])
 
         return gibbs_chains
 

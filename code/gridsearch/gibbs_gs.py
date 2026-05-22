@@ -28,6 +28,7 @@ ls_xyz = jnp.array([ls_xy, ls_xy, ls_z])
 X_train = jnp.load('X_train.npy')
 y_train = jnp.load('y_train.npy')
 obs_count = jnp.load('obs_count.npy')
+obs_sse = jnp.load('obs_sse.npy') if os.path.exists('obs_sse.npy') else jnp.zeros_like(obs_count)
 
 X_test = jnp.load('X_test.npy')
 y_test = jnp.load('y_test.npy')
@@ -52,7 +53,7 @@ def K(obs1, obs2):
 ### RUN GP ###
 
 GP = GaussianProcess(m, K)
-GP.fit(X_train, y_train, obs_count)
+GP.fit(X_train, y_train, obs_count, obs_sse=obs_sse)
 chain = GP.gibbs(chains=N_CHAINS, samples=N_SAMPLES)
 
 cov_chains = chain[1][:,BURNIN::THIN,:]
