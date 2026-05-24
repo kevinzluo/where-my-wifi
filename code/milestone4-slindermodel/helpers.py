@@ -450,6 +450,8 @@ def fit_torch_module(
             loss = model.loss()
             loss.backward()
             optimizer.step()
+            if hasattr(model, "project_parameters"):
+                model.project_parameters()
 
             value = float(loss.detach().cpu())
             history.append(value)
@@ -472,6 +474,8 @@ def fit_torch_module(
             return loss
 
         loss = optimizer.step(closure)
+        if hasattr(model, "project_parameters"):
+            model.project_parameters()
         history.append(float(loss.detach().cpu()))
         print(f"[LBFGS] final loss={history[-1]:.4f}")
 
@@ -496,11 +500,18 @@ class DenseAPSSEEstimator(nn.Module):
         log_ell_a
         mu_a in R^2
 
+    Optional fixed baseline:
+        fixed_b can be a scalar shared by all APs or a length-A vector.
+
     Global by default:
         gamma >= 0, outdoor attenuation
 
     Optional per AP:
         gamma_a >= 0, AP-specific outdoor attenuation
+
+    Optional length-scale constraint:
+        If ell_max_distance_multiplier is not None,
+        ell_a <= ell_max_distance_multiplier * max_i ||x_ai - mu_a||
     """
 
     def __init__(
@@ -510,6 +521,8 @@ class DenseAPSSEEstimator(nn.Module):
         learn_gamma: bool = True,
         shared_gamma: bool = True,
         gamma_init: float | Sequence[float] | torch.Tensor = 0.5,
+        fixed_b: Optional[float | Sequence[float] | torch.Tensor] = None,
+        ell_max_distance_multiplier: Optional[float] = None,
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
     ):
@@ -528,13 +541,38 @@ class DenseAPSSEEstimator(nn.Module):
         self.A = len(self.ap_data)
         self.learn_gamma = learn_gamma
         self.shared_gamma = shared_gamma
+        self.fixed_b = fixed_b is not None
+        self.ell_max_distance_multiplier = ell_max_distance_multiplier
+        if (
+            self.ell_max_distance_multiplier is not None
+            and self.ell_max_distance_multiplier <= 0
+        ):
+            raise ValueError("ell_max_distance_multiplier must be positive or None.")
 
         b0, logw0, logell0, mu0 = initialize_b_w_ell(self.ap_data)
+
+        if fixed_b is not None:
+            b_fixed = torch.as_tensor(
+                fixed_b,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            if b_fixed.ndim == 0:
+                b0 = b_fixed.repeat(self.A)
+            elif b_fixed.shape == (self.A,):
+                b0 = b_fixed
+            else:
+                raise ValueError(
+                    "fixed_b must be scalar or have shape (n_aps,)."
+                )
 
         self.b = nn.Parameter(b0.clone())
         self.log_w = nn.Parameter(logw0.clone())
         self.log_ell = nn.Parameter(logell0.clone())
         self.mu = nn.Parameter(mu0.clone())
+
+        if self.fixed_b:
+            self.b.requires_grad_(False)
 
         gamma0 = torch.as_tensor(
             gamma_init,
@@ -559,6 +597,8 @@ class DenseAPSSEEstimator(nn.Module):
         if not learn_gamma:
             self.raw_gamma.requires_grad_(False)
 
+        self.project_parameters()
+
     @property
     def gamma(self) -> torch.Tensor:
         return positive(self.raw_gamma)
@@ -568,6 +608,38 @@ class DenseAPSSEEstimator(nn.Module):
         if self.shared_gamma:
             return gamma
         return gamma[a]
+
+    def ell_upper_bounds(self) -> torch.Tensor:
+        if self.ell_max_distance_multiplier is None:
+            return torch.full(
+                (self.A,),
+                torch.inf,
+                device=self.device,
+                dtype=self.dtype,
+            )
+
+        bounds = []
+        multiplier = torch.as_tensor(
+            self.ell_max_distance_multiplier,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        for a, ap in enumerate(self.ap_data):
+            distances = torch.linalg.vector_norm(
+                ap.xy - self.mu[a][None, :],
+                dim=1,
+            )
+            bounds.append(multiplier * distances.max().clamp_min(1e-6))
+
+        return torch.stack(bounds)
+
+    @torch.no_grad()
+    def project_parameters(self) -> None:
+        if self.ell_max_distance_multiplier is None:
+            return
+
+        ell_upper = self.ell_upper_bounds()
+        self.log_ell.copy_(torch.minimum(self.log_ell, torch.log(ell_upper)))
 
     def ap_params(self) -> Dict[str, torch.Tensor]:
         return {
@@ -631,12 +703,15 @@ class DenseAPSSEEstimator(nn.Module):
         b = params["b"].detach().cpu()
         w = params["w"].detach().cpu()
         ell = params["ell"].detach().cpu()
+        ell_upper = self.ell_upper_bounds().detach().cpu()
         mu = params["mu"].detach().cpu()
         gamma = params["gamma"].detach().cpu()
 
         out = {
             "shared_gamma": self.shared_gamma,
             "gamma": float(gamma) if self.shared_gamma else [float(g) for g in gamma],
+            "fixed_b": self.fixed_b,
+            "ell_max_distance_multiplier": self.ell_max_distance_multiplier,
             "aps": {}
         }
 
@@ -646,6 +721,7 @@ class DenseAPSSEEstimator(nn.Module):
                 "b": float(b[i]),
                 "w": float(w[i]),
                 "ell": float(ell[i]),
+                "ell_upper_bound": float(ell_upper[i]),
                 "mu_x": float(mu[i, 0]),
                 "mu_y": float(mu[i, 1]),
                 "gamma": float(ap_gamma),
