@@ -4,6 +4,7 @@ import os
 import sys
 sys.path.append(os.getcwd())
 sys.path.append(f"{os.getcwd()}/..")
+import argparse
 
 from gp import GaussianProcess
 import pandas as pd
@@ -16,8 +17,11 @@ BURNIN = 10
 THIN = 10
 
 ### JOB ARRAY INDEX ###
+parser = argparse.ArgumentParser()
+parser.add_argument("job_idx", type=int)
+args = parser.parse_args()
+job_idx = args.job_idx
 
-job_idx = int(os.environ["SLURM_ARRAY_TASK_ID"])
 param_grid = pd.read_csv("param_grid2.csv")
 params = param_grid.iloc[job_idx]
 ls_xy, ls_z, os_xyz, ls_t, os_t = params["ls_xy"], params["ls_z"], params["os_xyz"], params["ls_t"], params["os_t"]
