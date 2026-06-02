@@ -114,6 +114,7 @@ class GaussianProcess():
 
             V = jsp.linalg.solve_triangular(L, Kn_new, lower=True)
             cov_post = K_new - V.T @ V
+            cov_post = 0.5 * (cov_post + cov_post.T)
 
             return m_post, cov_post
 
@@ -207,7 +208,8 @@ class GaussianProcess():
             - means: (n_batches * chain_length, n_new) array, conditional posterior means at each variance pair in cov_chains, for each point in X_new
             - vars: (n_batches * chain_length, n_new) array, conditional posterior variance at each variance pair in cov_chains, for each point in X_new
         '''
-        # note: set t_new to be infinity to kill temporal covariance
+        # Set t_new to infinity to remove temporal covariance among new points
+        # and between new points and training data.
         K_new = self.K(X_new, X_new.at[:,3].set(jnp.inf))
         Kn_new = self.K(self.X_train, X_new.at[:,3].set(jnp.inf))
 
