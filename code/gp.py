@@ -5,9 +5,9 @@ import jax.random as jr
 from functools import partial
 from sklearn.exceptions import NotFittedError
 
-@partial(jax.jit, static_argnames=['posterior_mean_cov', 'update_IG_in', 'update_IG_out'])
+@partial(jax.jit, static_argnames=['posterior_mean_cov', 'update_IG_in', 'update_IG_out', 'calibration'])
 def _gibbs_step(key, X_train, y_train, variances, obs_count,
-               posterior_mean_cov, update_IG_in, update_IG_out):
+               posterior_mean_cov, update_IG_in, update_IG_out, jitter=0, calibration=False):
     '''
     Helper function for a single Gibbs step. To be called by the Gibbs sampler, not intended for direct calling by user.
 
@@ -21,15 +21,11 @@ def _gibbs_step(key, X_train, y_train, variances, obs_count,
     '''
     key_f, key_var_in, key_var_out = jr.split(key, 3)
 
-    m_post, cov_post = posterior_mean_cov(X_train, variances)
-
-    # eigvals, eigvecs = jnp.linalg.eigh(cov_post)
-    # eigvals_safe = jnp.maximum(eigvals, 0.0)   # clip negative eigenvalues
-    # f_hat = eigvecs @ (jnp.sqrt(eigvals_safe) * jr.normal(key_f, shape=eigvals.shape, dtype=X_train.dtype)) + m_post
-
-    # REMARK: set jitter to be just larger than the magnitude of the smallest negative eigenvalue of cov_post
-    # ---> for fp32, use 1e-3. For fp64, use 1e-10 or 1e-11
-    f_hat = jr.multivariate_normal(key_f, m_post, cov_post + jnp.eye(cov_post.shape[0]) * 1e-3, method='cholesky')
+    m_post, cov_post = posterior_mean_cov(variances=variances)
+    if not calibration:
+        f_hat = jr.multivariate_normal(key_f, m_post, cov_post + jnp.eye(cov_post.shape[0]) * jitter, method='cholesky')
+    else:
+        f_hat = m_post
 
     S = obs_count * (y_train - f_hat)**2
     mask_in = X_train[:,2] == 1
@@ -127,13 +123,16 @@ class GaussianProcess():
 
         self.trained = True
 
-    def gibbs(self, key=jr.PRNGKey(305), chains=1, samples=20):
+    def gibbs(self, key=jr.PRNGKey(305), chains=1, samples=100, calibration_iters=10, jitter_factor=1.5):
         '''
         Run a Gibbs sampler to sample from the posterior distribution of the GP instance.
 
         key: jax.random key, key used for random sampling in Gibbs chain
         chains: int, number of Gibbs chains to simulate in parallel
         samples: int, length of each Gibbs chain
+        calibration_iters: int, iterations to run calibration -- Gibbs without sampling f_hat,
+            used to set Cholesky jitter and good Gibbs starting point
+        jitter_factor: float, set Cholesky jitter to be jitter_factor * |min(eigenvalue(cov_pot))|
 
         Returns: (f_chains, var_chains)
             - f_chains: (chains, samples, n_train) array, posterior samples of f at training data
@@ -142,15 +141,36 @@ class GaussianProcess():
         if not self.trained:
             raise NotFittedError("This Gaussian Process instance has not been fitted.")
 
+        key_calib, key_chains = jr.split(key)
+
+        ### calibrate the jitter for cholesky decomposition
+        # REMARK: set jitter to be just larger than the magnitude of the smallest negative eigenvalue of cov_post
+        # ---> For fp32, approximately 1e-3. For fp64, approximately 1e-10 or 1e-11
+        calib_step = partial(_gibbs_step, X_train=self.X_train, y_train=self.y_train, obs_count=self.obs_count,
+            posterior_mean_cov=partial(self.posterior_mean_cov, X_new=self.X_train, K_new=self.Kn, Kn_new=self.Kn),
+                            update_IG_in=self.update_IG_in, update_IG_out=self.update_IG_out, jitter=0, calibration=True)
+
+        def calib_loop(i, val):
+            variances, key = val
+            f_hat_new, variances_new = calib_step(key=key, variances=variances)
+            return (variances_new, jr.fold_in(key, i))
+        sigma_calib, _ = jax.lax.fori_loop(0, calibration_iters, calib_loop, (self.variances, key_calib))
+        self.variances = sigma_calib
+
+        mu_post, cov_post = self.posterior_mean_cov(self.X_train, sigma_calib, self.Kn, self.Kn)
+        eigvals, eigvecs = jnp.linalg.eigh(cov_post)
+        self.jitter = (-jnp.where(eigvals <= 0, eigvals, 0)).max() * jitter_factor
+
+        ### run gibbs sampler
         gibbs_step = partial(_gibbs_step, X_train=self.X_train, y_train=self.y_train, obs_count=self.obs_count,
-                posterior_mean_cov=partial(self.posterior_mean_cov, K_new=self.Kn, Kn_new=self.Kn),
-                                update_IG_in=self.update_IG_in, update_IG_out=self.update_IG_out)
+                posterior_mean_cov=partial(self.posterior_mean_cov, X_new=self.X_train, K_new=self.Kn, Kn_new=self.Kn),
+                                update_IG_in=self.update_IG_in, update_IG_out=self.update_IG_out, jitter=self.jitter, calibration=False)
 
         def single_chain_scan(variances, key):
             f_hat_new, variances_new = gibbs_step(key=key, variances=variances)
             return variances_new, (f_hat_new, variances_new)
 
-        keys = jr.split(key, chains)
+        keys = jr.split(key_chains, chains)
         carry, gibbs_chains = jax.vmap(
             lambda key: jax.lax.scan(single_chain_scan, init=self.variances, xs=jr.split(key, samples))
         )(keys)
