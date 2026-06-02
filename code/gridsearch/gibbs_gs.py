@@ -22,9 +22,16 @@ parser.add_argument("job_idx", type=int)
 args = parser.parse_args()
 job_idx = args.job_idx
 
-param_grid = pd.read_csv("param_grid2.csv")
+param_grid = pd.read_csv("param_grid3.csv")
 params = param_grid.iloc[job_idx]
-ls_xy, ls_z, os_xyz, ls_t, os_t = params["ls_xy"], params["ls_z"], params["os_xyz"], params["ls_t"], params["os_t"]
+ls_xy, ls_z, os_xyz, ls_t, os_t, ls_ap = (
+    params["ls_xy"],
+    params["ls_z"],
+    params["os_xyz"],
+    params["ls_t"],
+    params["os_t"],
+    params["ls_ap"],
+)
 ls_xyz = jnp.array([ls_xy, ls_xy, ls_z])
 
 ### DATA ###
@@ -49,9 +56,10 @@ def m(obs):
     return obs[2] * indoor_mean + (1 - obs[2]) * outdoor_mean
 
 def K(obs1, obs2):
-    d_xyz = (obs1[:3] - obs2[:3])**2
+    d_xyz = ((obs1[:3] - obs2[:3])**2 / (2*ls_xyz**2)).sum()
+    d_ap = jnp.where(obs1[4] == obs2[4], 0.0, 1.0) / (2*ls_ap**2)
     d_t = (obs1[3] - obs2[3])**2
-    return os_xyz * jnp.exp(- (d_xyz / (2*ls_xyz**2)).sum()) + \
+    return os_xyz * jnp.exp(- (d_xyz + d_ap)) + \
         os_t * jnp.exp(- d_t / (2*ls_t**2))
 
 ### RUN GP ###
@@ -64,7 +72,7 @@ cov_chains = chain[1][:,BURNIN::THIN,:]
 new_means, new_vars = GP.predict(X_test, cov_chains)
 mse = ((y_test - new_means.mean(axis=0))**2).mean()
 
-results = f"{job_idx},{ls_xy},{ls_z},{os_xyz},{ls_t},{os_t},{mse}"
+results = f"{job_idx},{ls_xy},{ls_z},{os_xyz},{ls_t},{os_t},{ls_ap},{mse}"
 
 with open(f"results/job_{job_idx}", "w", encoding="utf-8") as f:
     f.write(results)
