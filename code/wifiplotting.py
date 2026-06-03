@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from IPython.display import display
 from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch, PathPatch
+from matplotlib.patches import Patch, PathPatch, Polygon
 from matplotlib.path import Path as MplPath
 
 TILE_SIZE = 256
@@ -20,11 +20,348 @@ USER_AGENT = "stats305c-eda/1.0"
 
 TL_CORNER = [37.430582, -122.173904]
 BR_CORNER = [37.42705, -122.169413]
+GEO_VIS_HIGHLIGHT_COLOR = "#d62728"
 
 
 def first_non_null(series, fallback="unknown"):
     non_null = series.dropna()
     return non_null.iloc[0] if not non_null.empty else fallback
+
+
+def geo_vis_grid_from_lonlat(lons, lats, lat_bins, lon_bins):
+    lons = np.asarray(lons, dtype=float)
+    lats = np.asarray(lats, dtype=float)
+    valid = np.isfinite(lons) & np.isfinite(lats)
+    if not np.any(valid):
+        raise ValueError("At least one finite lon/lat pair is required.")
+
+    lat_edges = np.linspace(lats[valid].min(), lats[valid].max(), lat_bins + 1)
+    lon_edges = np.linspace(lons[valid].min(), lons[valid].max(), lon_bins + 1)
+
+    lat_grid = np.digitize(lats, lat_edges, right=False) - 1
+    lon_grid = np.digitize(lons, lon_edges, right=False) - 1
+
+    lat_grid = np.where(lats == lat_edges[-1], len(lat_edges) - 2, lat_grid)
+    lon_grid = np.where(lons == lon_edges[-1], len(lon_edges) - 2, lon_grid)
+
+    in_grid = (
+        valid
+        & (lat_grid >= 0)
+        & (lat_grid < len(lat_edges) - 1)
+        & (lon_grid >= 0)
+        & (lon_grid < len(lon_edges) - 1)
+    )
+    return lat_edges, lon_edges, lat_grid, lon_grid, in_grid
+
+
+def geo_vis_cells_from_indices(indices, lat_grid, lon_grid, in_grid):
+    indices = np.asarray(indices, dtype=int)
+    indices = indices[in_grid[indices]]
+    return np.unique(np.column_stack([lat_grid[indices], lon_grid[indices]]), axis=0)
+
+
+def draw_geo_cells(ax, context, lat_edges, lon_edges, cells, **kwargs):
+    style = {
+        "facecolor": "none",
+        "edgecolor": GEO_VIS_HIGHLIGHT_COLOR,
+        "linewidth": 2.0,
+        "alpha": 0.95,
+        "zorder": 8,
+    }
+    style.update(kwargs)
+
+    patches = []
+    for lat_bin, lon_bin in np.asarray(cells, dtype=int):
+        lon0, lon1 = lon_edges[lon_bin], lon_edges[lon_bin + 1]
+        lat0, lat1 = lat_edges[lat_bin], lat_edges[lat_bin + 1]
+        xs, ys = context.to_world(
+            [lon0, lon1, lon1, lon0],
+            [lat0, lat0, lat1, lat1],
+        )
+        patch = Polygon(np.column_stack([xs, ys]), closed=True, **style)
+        ax.add_patch(patch)
+        patches.append(patch)
+    return patches
+
+
+def plot_geo_fold_surface(
+    context,
+    world_grid,
+    grid_pred,
+    *,
+    world_train=None,
+    y_train=None,
+    world_test=None,
+    y_test=None,
+    lat_edges=None,
+    lon_edges=None,
+    heldout_cells=None,
+    vmin=None,
+    vmax=None,
+    model_label="Model",
+    split_idx=None,
+    cmap="RdYlGn",
+    surface_size=36,
+    surface_alpha=0.7,
+    show_train=False,
+    train_size=12,
+    train_alpha=0.45,
+    test_size=72,
+    cell_style=None,
+    show_colorbar=True,
+    colorbar_label="Predicted RSSI",
+    title=None,
+    draw_buildings=False,
+):
+    world_grid = np.asarray(world_grid)
+    grid_pred = np.asarray(grid_pred)
+
+    if vmin is None or vmax is None:
+        values = [grid_pred[np.isfinite(grid_pred)]]
+        if y_train is not None:
+            y_train_arr = np.asarray(y_train)
+            values.append(y_train_arr[np.isfinite(y_train_arr)])
+        if y_test is not None:
+            y_test_arr = np.asarray(y_test)
+            values.append(y_test_arr[np.isfinite(y_test_arr)])
+        finite_values = np.concatenate([value for value in values if value.size])
+        if finite_values.size == 0:
+            raise ValueError("At least one finite value is required for color scaling.")
+        if vmin is None:
+            vmin = np.quantile(finite_values, 0.025)
+        if vmax is None:
+            vmax = np.quantile(finite_values, 0.975)
+
+    fig, ax, _ = context.generate_base_axis(draw_buildings=draw_buildings)
+    surface = ax.scatter(
+        world_grid[:, 0],
+        world_grid[:, 1],
+        c=grid_pred,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        s=surface_size,
+        alpha=surface_alpha,
+        zorder=3,
+    )
+
+    if show_train and world_train is not None and y_train is not None:
+        world_train = np.asarray(world_train)
+        ax.scatter(
+            world_train[:, 0],
+            world_train[:, 1],
+            c=np.asarray(y_train),
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            s=train_size,
+            alpha=train_alpha,
+            linewidths=0,
+            zorder=4,
+            label="Train observations",
+        )
+
+    if world_test is not None and y_test is not None:
+        world_test = np.asarray(world_test)
+        ax.scatter(
+            world_test[:, 0],
+            world_test[:, 1],
+            c=np.asarray(y_test),
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            s=test_size,
+            marker="o",
+            edgecolor="black",
+            linewidth=0.7,
+            zorder=6,
+            label="Held-out observations",
+        )
+
+    if heldout_cells is not None:
+        if lat_edges is None or lon_edges is None:
+            raise ValueError("lat_edges and lon_edges are required with heldout_cells.")
+        style = {} if cell_style is None else dict(cell_style)
+        draw_geo_cells(ax, context, lat_edges, lon_edges, heldout_cells, **style)
+
+    if title is None:
+        fold_label = "" if split_idx is None else f" on geo fold {split_idx}"
+        title = f"{model_label} surface fit{fold_label} training rows"
+    ax.set_title(title)
+
+    if show_train or (world_test is not None and y_test is not None):
+        ax.legend(loc="lower right")
+    plt.ticklabel_format(style="plain", axis="both", useOffset=False)
+    if show_colorbar:
+        plt.colorbar(surface, ax=ax, label=colorbar_label)
+    plt.tight_layout()
+    return fig, ax, surface
+
+
+def compute_heldout_error_summary(
+    y_true,
+    y_pred,
+    *,
+    test_idx=None,
+    coord_all=None,
+    X_test=None,
+    top_n=4,
+):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    residual = y_true - y_pred
+    squared_error = residual ** 2
+    mse = squared_error.mean()
+
+    top_n = min(int(top_n), squared_error.size)
+    top_local_idx = np.argsort(squared_error)[-top_n:][::-1]
+
+    data = {
+        "rank": np.arange(1, top_n + 1),
+        "observed": y_true[top_local_idx],
+        "predicted": y_pred[top_local_idx],
+        "residual": residual[top_local_idx],
+        "squared_error": squared_error[top_local_idx],
+    }
+
+    if test_idx is not None:
+        test_idx = np.asarray(test_idx)
+        data["global_idx"] = test_idx[top_local_idx]
+        if coord_all is not None:
+            coord_all = np.asarray(coord_all)
+            data["longitude"] = coord_all[data["global_idx"], 0]
+            data["latitude"] = coord_all[data["global_idx"], 1]
+
+    if X_test is not None:
+        X_test = np.asarray(X_test)
+        if X_test.shape[1] > 2:
+            data["indoor"] = X_test[top_local_idx, 2]
+        if X_test.shape[1] > 4:
+            data["ap_code"] = X_test[top_local_idx, 4].astype(int)
+
+    columns = [
+        "rank",
+        "global_idx",
+        "observed",
+        "predicted",
+        "residual",
+        "squared_error",
+        "longitude",
+        "latitude",
+        "indoor",
+        "ap_code",
+    ]
+    top_errors = pd.DataFrame(data)
+    top_errors = top_errors[[col for col in columns if col in top_errors.columns]]
+    return residual, squared_error, mse, top_local_idx, top_errors
+
+
+def plot_heldout_error_hist(
+    squared_error,
+    mse,
+    top_local_idx,
+    *,
+    split_idx=None,
+    model_label="Model",
+    top_n=None,
+    bins=40,
+    highlight_color=GEO_VIS_HIGHLIGHT_COLOR,
+):
+    squared_error = np.asarray(squared_error)
+    top_local_idx = np.asarray(top_local_idx, dtype=int)
+    if top_n is None:
+        top_n = len(top_local_idx)
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.hist(squared_error, bins=bins, color="0.3", edgecolor="white", alpha=0.9)
+    ax.axvline(mse, color=highlight_color, linewidth=2, label=f"MSE = {mse:.2f}")
+    if top_local_idx.size:
+        ax.axvline(
+            squared_error[top_local_idx[-1]],
+            color="black",
+            linewidth=1.5,
+            linestyle="--",
+            label=f"Top {top_n} cutoff",
+        )
+    fold_label = "" if split_idx is None else f"Geo fold {split_idx} "
+    ax.set_title(f"{fold_label}{model_label} held-out squared errors")
+    ax.set_xlabel("Squared error")
+    ax.set_ylabel("Held-out datapoints")
+    ax.legend()
+    plt.tight_layout()
+    return fig, ax
+
+
+def plot_top_heldout_errors_map(
+    context,
+    world_test,
+    squared_error,
+    top_local_idx,
+    *,
+    lat_edges=None,
+    lon_edges=None,
+    heldout_cells=None,
+    split_idx=None,
+    model_label="Model",
+    top_n=None,
+    cmap="magma_r",
+    cell_style=None,
+    draw_buildings=False,
+):
+    world_test = np.asarray(world_test)
+    squared_error = np.asarray(squared_error)
+    top_local_idx = np.asarray(top_local_idx, dtype=int)
+    if top_n is None:
+        top_n = len(top_local_idx)
+
+    fig, ax, _ = context.generate_base_axis(draw_buildings=draw_buildings)
+    ax.scatter(
+        world_test[:, 0],
+        world_test[:, 1],
+        color="0.7",
+        s=28,
+        alpha=0.5,
+        linewidths=0,
+        zorder=4,
+        label="Other held-out observations",
+    )
+    top_scatter = ax.scatter(
+        world_test[top_local_idx, 0],
+        world_test[top_local_idx, 1],
+        c=squared_error[top_local_idx],
+        cmap=cmap,
+        s=96,
+        marker="o",
+        edgecolor="black",
+        linewidth=0.8,
+        zorder=7,
+        label=f"Top {top_n} squared errors",
+    )
+    for rank, local_idx in enumerate(top_local_idx, start=1):
+        ax.annotate(
+            str(rank),
+            xy=(world_test[local_idx, 0], world_test[local_idx, 1]),
+            xytext=(4, 4),
+            textcoords="offset points",
+            fontsize=8,
+            fontweight="bold",
+            color="black",
+            zorder=9,
+        )
+
+    if heldout_cells is not None:
+        if lat_edges is None or lon_edges is None:
+            raise ValueError("lat_edges and lon_edges are required with heldout_cells.")
+        style = {} if cell_style is None else dict(cell_style)
+        draw_geo_cells(ax, context, lat_edges, lon_edges, heldout_cells, **style)
+
+    fold_label = "" if split_idx is None else f"Geo fold {split_idx}: "
+    ax.set_title(f"{fold_label}top {top_n} {model_label} held-out errors")
+    ax.legend(loc="lower right")
+    plt.ticklabel_format(style="plain", axis="both", useOffset=False)
+    plt.colorbar(top_scatter, ax=ax, label="Squared error")
+    plt.tight_layout()
+    return fig, ax, top_scatter
 
 
 def lonlat_to_world(lon, lat, zoom):
