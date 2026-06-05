@@ -2,8 +2,153 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 import jax.random as jr
+import numpy as np
 from functools import partial
+from statistics import NormalDist
 from sklearn.exceptions import NotFittedError
+
+
+def _coverage_level_label(level):
+    return f"{int(round(100 * level))}"
+
+
+def _as_2d_prediction_array(name, value):
+    value = np.asarray(value, dtype=float)
+    if value.ndim != 2:
+        raise ValueError(f"{name} must be a 2D array with shape (posterior_samples, n_points).")
+    if not np.all(np.isfinite(value)):
+        raise ValueError(f"{name} must contain only finite values.")
+    return value
+
+
+def _flatten_cov_chains(cov_chains, n_samples):
+    cov_chains = np.asarray(cov_chains, dtype=float)
+    if cov_chains.ndim == 3:
+        cov_chains = cov_chains.reshape(-1, cov_chains.shape[-1])
+    if cov_chains.ndim != 2 or cov_chains.shape[1] != 2:
+        raise ValueError("cov_chains must have shape (samples, 2) or (chains, samples, 2).")
+    if cov_chains.shape[0] != n_samples:
+        raise ValueError(
+            "cov_chains must flatten to the same number of posterior samples as pred_means."
+        )
+    if not np.all(np.isfinite(cov_chains)):
+        raise ValueError("cov_chains must contain only finite values.")
+    return cov_chains
+
+
+def posterior_predictive_interval_summary(
+    y_true,
+    pred_means,
+    pred_vars,
+    *,
+    cov_chains=None,
+    X_test=None,
+    obs_count_test=None,
+    levels=(0.5, 0.8, 0.9, 0.95),
+    target="observed",
+    random_state=305,
+    return_intervals=False,
+):
+    """
+    Summarize held-out coverage for GP posterior predictive intervals.
+
+    pred_means and pred_vars should be the arrays returned by
+    GaussianProcess.predict. They are interpreted as conditional latent
+    posterior moments for each retained variance sample. The default target is
+    the held-out aggregated observation, so indoor/outdoor observation noise is
+    added from cov_chains and scaled by obs_count_test.
+    """
+    if target not in {"observed", "latent"}:
+        raise ValueError("target must be 'observed' or 'latent'.")
+
+    y_true = np.asarray(y_true, dtype=float).reshape(-1)
+    if not np.all(np.isfinite(y_true)):
+        raise ValueError("y_true must contain only finite values.")
+
+    pred_means = _as_2d_prediction_array("pred_means", pred_means)
+    pred_vars = _as_2d_prediction_array("pred_vars", pred_vars)
+    if pred_vars.shape != pred_means.shape:
+        raise ValueError("pred_vars must have the same shape as pred_means.")
+
+    n_samples, n_points = pred_means.shape
+    if y_true.shape[0] != n_points:
+        raise ValueError("y_true length must match the prediction point dimension.")
+
+    levels = tuple(float(level) for level in levels)
+    if not levels or any(level <= 0 or level >= 1 for level in levels):
+        raise ValueError("levels must be probabilities strictly between 0 and 1.")
+
+    total_vars = np.maximum(pred_vars, 0.0)
+
+    if target == "observed":
+        cov_chains = _flatten_cov_chains(cov_chains, n_samples)
+
+        if X_test is None:
+            raise ValueError("X_test is required when target='observed'.")
+        X_test = np.asarray(X_test)
+        if X_test.ndim != 2 or X_test.shape[0] != n_points or X_test.shape[1] < 3:
+            raise ValueError("X_test must have shape (n_points, d) with d >= 3.")
+
+        if obs_count_test is None:
+            obs_count_test = np.ones(n_points)
+        obs_count_test = np.asarray(obs_count_test, dtype=float).reshape(-1)
+        if obs_count_test.shape[0] != n_points:
+            raise ValueError("obs_count_test length must match y_true.")
+        if np.any(obs_count_test <= 0) or not np.all(np.isfinite(obs_count_test)):
+            raise ValueError("obs_count_test must contain positive finite counts.")
+
+        is_indoor = X_test[:, 2].astype(bool)
+        obs_vars = np.where(is_indoor[None, :], cov_chains[:, 1:2], cov_chains[:, 0:1])
+        total_vars = total_vars + np.maximum(obs_vars, 0.0) / obs_count_test[None, :]
+
+    if hasattr(random_state, "normal"):
+        rng = random_state
+    else:
+        rng = np.random.default_rng(random_state)
+    draws = rng.normal(pred_means, np.sqrt(total_vars))
+
+    pred_mean = pred_means.mean(axis=0)
+    mixture_var = total_vars.mean(axis=0) + pred_means.var(axis=0)
+    normal_dist = NormalDist()
+
+    summary = {
+        "target": target,
+        "n_points": int(n_points),
+        "n_posterior_samples": int(n_samples),
+        "mean_predictive_sd": float(np.sqrt(mixture_var).mean()),
+    }
+    intervals = {}
+
+    for level in levels:
+        label = _coverage_level_label(level)
+        alpha = (1.0 - level) / 2.0
+
+        lower = np.quantile(draws, alpha, axis=0)
+        upper = np.quantile(draws, 1.0 - alpha, axis=0)
+        covered = (y_true >= lower) & (y_true <= upper)
+        summary[f"coverage_{label}"] = float(covered.mean())
+        summary[f"avg_width_{label}"] = float((upper - lower).mean())
+
+        z = normal_dist.inv_cdf(0.5 + level / 2.0)
+        normal_lower = pred_mean - z * np.sqrt(mixture_var)
+        normal_upper = pred_mean + z * np.sqrt(mixture_var)
+        normal_covered = (y_true >= normal_lower) & (y_true <= normal_upper)
+        summary[f"normal_coverage_{label}"] = float(normal_covered.mean())
+        summary[f"normal_avg_width_{label}"] = float((normal_upper - normal_lower).mean())
+
+        if return_intervals:
+            intervals[label] = {
+                "lower": lower,
+                "upper": upper,
+                "normal_lower": normal_lower,
+                "normal_upper": normal_upper,
+            }
+
+    if return_intervals:
+        summary["intervals"] = intervals
+
+    return summary
+
 
 @partial(jax.jit, static_argnames=['posterior_mean_cov', 'update_IG_in', 'update_IG_out', 'calibration'])
 def _gibbs_step(key, X_train, y_train, variances, obs_count,
