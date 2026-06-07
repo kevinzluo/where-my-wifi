@@ -1,0 +1,2 @@
+model,mse,inner_geo5_mse,n_train,n_test,features__ap_scale,features__indoor_scale,knn__n_neighbors,knn__p,knn__weights
+knn,84.25625594486999,79.94013707806342,2064,553,1.0,0.5,54,1,distance

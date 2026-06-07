@@ -1,0 +1,12 @@
+{
+  "outer_source": "/Users/kevinluo/Documents/stat/stanford/305c/where-my-wifi-new-feats/code/cv/geo",
+  "outer_fold": 0,
+  "random_state": 305,
+  "n_total": 2617,
+  "n_outer_train": 2064,
+  "n_outer_holdout": 553,
+  "inner_folds": {
+    "geo3": 3,
+    "geo5": 5
+  }
+}
