@@ -182,6 +182,20 @@ def result_path(result_dir, param_id, fold_idx):
     return Path(result_dir) / f"param_{int(param_id):04d}_fold_{int(fold_idx)}.csv"
 
 
+def read_result_row(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+
+    try:
+        result = pd.read_csv(path)
+    except Exception:
+        return None
+    if len(result) != 1:
+        return None
+    return result.iloc[0].to_dict()
+
+
 def completed_gp_results(result_dir):
     result_dir = Path(result_dir)
     rows = []
@@ -189,16 +203,18 @@ def completed_gp_results(result_dir):
         return pd.DataFrame()
 
     for path in sorted(result_dir.glob("param_*_fold_*.csv")):
-        try:
-            rows.append(pd.read_csv(path).iloc[0].to_dict())
-        except Exception:
-            continue
+        row = read_result_row(path)
+        if row is not None:
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
 def summarize_cv_results(results):
     if len(results) == 0:
         return pd.DataFrame()
+    results = results.copy()
+    if "total_elapsed" not in results.columns:
+        results["total_elapsed"] = results["fit_elapsed"] + results["predict_elapsed"]
     grouped = (
         results.groupby("param_id", as_index=False)
         .agg(
@@ -207,6 +223,7 @@ def summarize_cv_results(results):
             n_folds=("fold_idx", "nunique"),
             mean_fit_elapsed=("fit_elapsed", "mean"),
             mean_predict_elapsed=("predict_elapsed", "mean"),
+            mean_total_elapsed=("total_elapsed", "mean"),
         )
         .sort_values(["mean_mse", "std_mse"], na_position="last")
     )
@@ -239,4 +256,6 @@ def make_geo_cv_index_pairs(split_dir, n_splits):
 def write_result_row(path, row):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([row]).to_csv(path, index=False)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    pd.DataFrame([row]).to_csv(tmp_path, index=False)
+    tmp_path.replace(path)
