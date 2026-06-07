@@ -132,9 +132,9 @@ def write_nested_geo_splits(
 
 
 def make_gp_stage1_grid():
-    ls_xy_vals = [0.025, 0.04, 0.06]
+    ls_xy_vals = [0.025, 0.035, 0.04, 0.05, 0.09]
     ls_z_vals = [0.25, 0.5]
-    os_xyz_vals = [10, 25, 50]
+    os_xyz_vals = [10, 20, 25, 35, 50]
     time_configs = [(0, 50), (5, 50), (5, 5)]
     ap_setups = [
         {"ap_form": "none", "ls_ap": 1.0, "os_ap": 0.0},
@@ -147,8 +147,12 @@ def make_gp_stage1_grid():
     ]
 
     rows = []
+    grid_iter = list(product(ls_xy_vals, ls_z_vals, os_xyz_vals, time_configs, ap_setups))
+    grid_iter.extend(
+        product([0.04, 0.05], ls_z_vals, [75], time_configs, ap_setups)
+    )
     for param_id, (ls_xy, ls_z, os_xyz, (os_t, ls_t), ap) in enumerate(
-        product(ls_xy_vals, ls_z_vals, os_xyz_vals, time_configs, ap_setups)
+        grid_iter
     ):
         rows.append(
             {
@@ -163,7 +167,7 @@ def make_gp_stage1_grid():
         )
 
     grid = pd.DataFrame(rows)
-    if grid.shape != (378, 9):
+    if grid.shape != (1134, 9):
         raise RuntimeError(f"Unexpected GP stage-1 grid shape: {grid.shape}.")
     if grid.drop(columns=["param_id"]).duplicated().any():
         raise RuntimeError("GP stage-1 grid contains duplicate parameter rows.")

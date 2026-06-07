@@ -45,9 +45,10 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
   - Includes `manifest.json`.
 
 - `code/gridsearch/gp_geo_stage1_grid.csv`
-  - 378 GP configs.
+  - 1134 GP configs.
   - Crosses:
-    - spatial scales
+    - `ls_xy` values: `0.025, 0.035, 0.04, 0.05, 0.09`
+    - `os_xyz` values `10, 20, 25, 35, 50`, plus a targeted `75` slice for `ls_xy` values `0.04` and `0.05`
     - temporal configs including time off
     - AP forms: none/additive/multiplicative
 
@@ -65,7 +66,7 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
 
 - `code/gridsearch/GP Geo CV Tuning.ipynb`
   - Restartable GP tuning notebook.
-  - Stage 1: 378 configs x 3 inner geo folds = 1134 GP fits.
+  - Stage 1: 1134 configs x 3 inner geo folds = 3402 GP fits.
   - Stage 2: top 25 configs x 5 inner geo folds = 125 GP fits.
   - Writes one CSV per `(param_id, fold_idx)` under `code/eval_results/gp_stage1/` or `gp_stage2/`.
   - Final selected GP can be fit on outer train and evaluated on outer holdout.
@@ -145,7 +146,7 @@ Lightweight checks were run only; no full GP grid fitting was executed by Codex.
   - inner folds are subsets of outer train
   - inner held-out fold union covers outer train
 - GP grid validation passed:
-  - 378 rows
+  - 1134 rows
   - unique `param_id`
   - no duplicate config rows
   - AP forms include `none`, `add`, `mult`
@@ -163,4 +164,3 @@ Suggested sanity-review areas:
 - Check the KNN hyperparameter grid in `KNN Geo CV Tuning.ipynb`; it currently produced `knn__n_neighbors = 54` in the saved result, so verify the intended neighbor range.
 - Check that `eval_results/` CSVs should be committed or ignored. They are small but are generated results.
 - Check that generated split artifacts under `code/eval_splits/` should be committed or regenerated from `setup_nested_geo_eval.py`.
-
