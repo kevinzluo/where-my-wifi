@@ -55,10 +55,12 @@ def posterior_predictive_interval_summary(
     GaussianProcess.predict. They are interpreted as conditional latent
     posterior moments for each retained variance sample. The default target is
     the held-out aggregated observation, so indoor/outdoor observation noise is
-    added from cov_chains and scaled by obs_count_test.
+    added from cov_chains and scaled by obs_count_test. Use target='raw' to
+    compare against de-aggregated raw observations with the full observation
+    noise variance.
     """
-    if target not in {"observed", "latent"}:
-        raise ValueError("target must be 'observed' or 'latent'.")
+    if target not in {"observed", "raw", "latent"}:
+        raise ValueError("target must be 'observed', 'raw', or 'latent'.")
 
     y_true = np.asarray(y_true, dtype=float).reshape(-1)
     if not np.all(np.isfinite(y_true)):
@@ -79,26 +81,28 @@ def posterior_predictive_interval_summary(
 
     total_vars = np.maximum(pred_vars, 0.0)
 
-    if target == "observed":
+    if target in {"observed", "raw"}:
         cov_chains = _flatten_cov_chains(cov_chains, n_samples)
 
         if X_test is None:
-            raise ValueError("X_test is required when target='observed'.")
+            raise ValueError("X_test is required when target includes observation noise.")
         X_test = np.asarray(X_test)
         if X_test.ndim != 2 or X_test.shape[0] != n_points or X_test.shape[1] < 3:
             raise ValueError("X_test must have shape (n_points, d) with d >= 3.")
 
-        if obs_count_test is None:
-            obs_count_test = np.ones(n_points)
-        obs_count_test = np.asarray(obs_count_test, dtype=float).reshape(-1)
-        if obs_count_test.shape[0] != n_points:
-            raise ValueError("obs_count_test length must match y_true.")
-        if np.any(obs_count_test <= 0) or not np.all(np.isfinite(obs_count_test)):
-            raise ValueError("obs_count_test must contain positive finite counts.")
-
         is_indoor = X_test[:, 2].astype(bool)
         obs_vars = np.where(is_indoor[None, :], cov_chains[:, 1:2], cov_chains[:, 0:1])
-        total_vars = total_vars + np.maximum(obs_vars, 0.0) / obs_count_test[None, :]
+        if target == "observed":
+            if obs_count_test is None:
+                obs_count_test = np.ones(n_points)
+            obs_count_test = np.asarray(obs_count_test, dtype=float).reshape(-1)
+            if obs_count_test.shape[0] != n_points:
+                raise ValueError("obs_count_test length must match y_true.")
+            if np.any(obs_count_test <= 0) or not np.all(np.isfinite(obs_count_test)):
+                raise ValueError("obs_count_test must contain positive finite counts.")
+            total_vars = total_vars + np.maximum(obs_vars, 0.0) / obs_count_test[None, :]
+        else:
+            total_vars = total_vars + np.maximum(obs_vars, 0.0)
 
     if hasattr(random_state, "normal"):
         rng = random_state
