@@ -1,0 +1,2 @@
+model,param_id,mse,n_train,n_test,fit_elapsed,predict_elapsed,jitter,ap_form,ls_xy,ls_z,os_xyz,ls_t,os_t,ls_ap,os_ap
+gp,652,73.17362976074219,2064,553,7.942957401275635,1.7508141994476318,0.0008801842923276126,mult,0.05,0.25,20,50,0,0.5,0.0

@@ -13,7 +13,7 @@ def _coverage_level_label(level):
 
 
 def _as_2d_prediction_array(name, value):
-    value = np.asarray(value, dtype=float)
+    value = jnp.asarray(value, dtype=float)
     if value.ndim != 2:
         raise ValueError(f"{name} must be a 2D array with shape (posterior_samples, n_points).")
     if not np.all(np.isfinite(value)):
@@ -22,7 +22,7 @@ def _as_2d_prediction_array(name, value):
 
 
 def _flatten_cov_chains(cov_chains, n_samples):
-    cov_chains = np.asarray(cov_chains, dtype=float)
+    cov_chains = jnp.asarray(cov_chains, dtype=float)
     if cov_chains.ndim == 3:
         cov_chains = cov_chains.reshape(-1, cov_chains.shape[-1])
     if cov_chains.ndim != 2 or cov_chains.shape[1] != 2:
@@ -34,8 +34,7 @@ def _flatten_cov_chains(cov_chains, n_samples):
     if not np.all(np.isfinite(cov_chains)):
         raise ValueError("cov_chains must contain only finite values.")
     return cov_chains
-
-
+    
 def posterior_predictive_interval_summary(
     y_true,
     pred_means,

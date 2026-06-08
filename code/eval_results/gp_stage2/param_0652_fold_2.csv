@@ -1,0 +1,2 @@
+param_id,fold_idx,n_train,n_test,mse,fit_elapsed,predict_elapsed,total_elapsed,jitter,ap_form,ls_xy,ls_z,os_xyz,ls_t,os_t,ls_ap,os_ap
+652,2,1620,444,74.7967300415039,4.774549245834351,0.7619585990905762,5.636923313140869,0.0012891866499558091,mult,0.05,0.25,20,50,0,0.5,0.0
