@@ -34,6 +34,12 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
     /Users/kevinluo/.virtualenvs/stats305c/bin/python code/setup_nested_geo_eval.py
     ```
 
+- `code/run_gp_cv_fit.py`
+  - Runs one or more GP CV fits from the command line.
+  - Used by `GP Geo CV Tuning.ipynb` in sequential chunks to avoid GPU memory accumulation in a long-running notebook kernel.
+  - Accepts either a single `--param-id/--fold-idx` pair or `--jobs-json` with a list of fits.
+  - Writes the same restartable per-fit CSVs as the notebook loop.
+
 ## New Data/Artifact Layout
 
 - `code/eval_splits/geo_outer0/`
@@ -69,6 +75,11 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
   - Stage 1: 1134 configs x 3 inner geo folds = 3402 GP fits.
   - Stage 2: top 25 configs x 5 inner geo folds = 125 GP fits.
   - Writes one CSV per `(param_id, fold_idx)` under `code/eval_results/gp_stage1/` or `gp_stage2/`.
+  - Expensive loops now run sequential chunked subprocesses:
+    - `RUN_FITS_IN_SUBPROCESS = True`
+    - `FITS_PER_PROCESS = 20`
+    - at most one subprocess/GPU worker is active at a time
+    - each subprocess exits after its chunk, releasing GPU memory
   - Final selected GP can be fit on outer train and evaluated on outer holdout.
 
 - `code/gridsearch/KNN Geo CV Tuning.ipynb`
@@ -129,7 +140,9 @@ From a clean data state:
 3. Run `code/gridsearch/KNN Geo CV Tuning.ipynb`.
 
 4. Run `code/gridsearch/GP Geo CV Tuning.ipynb`.
-   - The expensive cells are restartable.
+   - The expensive cells are restartable and skip completed per-fit CSVs.
+   - Default execution uses sequential chunks of 20 fits per subprocess to avoid GPU OOM from accumulated JAX/GPU state.
+   - If GPU memory still fails, lower `FITS_PER_PROCESS` in the notebook to `10` or smaller.
 
 5. Run `code/gridsearch/Result Analysis.ipynb`.
 
@@ -153,6 +166,28 @@ Lightweight checks were run only; no full GP grid fitting was executed by Codex.
 - Kernel sanity checks passed under `JAX_PLATFORMS=cpu`.
 - Restart-result scan helper was dry-run using a temp directory.
 - `Fixed Config Evaluation.ipynb` setup/helper cells were smoke-tested without fitting models.
+- `code/run_gp_cv_fit.py` compiles.
+- `code/run_gp_cv_fit.py --help` works without importing JAX or initializing GPU.
+- `GP Geo CV Tuning.ipynb` JSON parses after switching to sequential chunked subprocesses.
+
+## GP Loop/GPU Memory Notes
+
+The first attempt ran all GP fits inside the notebook kernel. It failed after about 42 fits with GPU OOM. The likely issue is accumulated JAX/GPU state: Python `del`, `gc.collect()`, or `jax.clear_caches()` may not reliably release all device buffers, compiled executables, allocator pools, or backend state during a long notebook process.
+
+The current fix is chunked process isolation:
+
+- The notebook builds pending jobs from missing per-fit CSVs.
+- It launches `code/run_gp_cv_fit.py` with a JSON chunk of jobs.
+- `subprocess.run(...)` blocks, so chunks run sequentially, not in parallel.
+- The worker caches fold arrays within the chunk to avoid repeated IO for every single fit.
+- When the worker exits, the OS/backend tears down that process's GPU context.
+- `FITS_PER_PROCESS = 20` is intended to amortize startup/first-compile cost while staying below the observed OOM threshold.
+
+If a run dies:
+
+- Completed fit CSVs should remain on disk.
+- Re-running the notebook should skip those completed fits.
+- If it dies from GPU OOM again, reduce `FITS_PER_PROCESS`.
 
 ## Review Focus
 
@@ -164,3 +199,5 @@ Suggested sanity-review areas:
 - Check the KNN hyperparameter grid in `KNN Geo CV Tuning.ipynb`; it currently produced `knn__n_neighbors = 54` in the saved result, so verify the intended neighbor range.
 - Check that `eval_results/` CSVs should be committed or ignored. They are small but are generated results.
 - Check that generated split artifacts under `code/eval_splits/` should be committed or regenerated from `setup_nested_geo_eval.py`.
+- Check whether `FITS_PER_PROCESS = 20` is the right GPU-memory/runtime tradeoff for the actual machine.
+- Check whether `JITTER_FACTOR = 10` in `GP Geo CV Tuning.ipynb` is intended as the final tuning setting.
