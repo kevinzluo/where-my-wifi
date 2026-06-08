@@ -19,6 +19,19 @@ ARRAY_NAMES = (
     "idx",
 )
 
+PARAM_COLUMNS = (
+    "ap_form",
+    "ls_xy",
+    "ls_z",
+    "os_xyz",
+    "ls_t",
+    "os_t",
+    "ls_ap",
+    "os_ap",
+)
+
+FLOAT_PARAM_COLUMNS = PARAM_COLUMNS[1:]
+
 
 def load_training_artifacts(data_dir="data"):
     data_dir = Path(data_dir)
@@ -132,25 +145,21 @@ def write_nested_geo_splits(
 
 
 def make_gp_stage1_grid():
-    ls_xy_vals = [0.025, 0.035, 0.04, 0.05, 0.09]
+    ls_xy_vals = [0.025, 0.035, 0.04]
     ls_z_vals = [0.25, 0.5]
-    os_xyz_vals = [10, 20, 25, 35, 50]
-    time_configs = [(0, 50), (5, 50), (5, 5)]
+    os_xyz_vals = [20, 25, 50]
+    time_configs = [(0, 50)]
     ap_setups = [
-        {"ap_form": "none", "ls_ap": 1.0, "os_ap": 0.0},
-        {"ap_form": "mult", "ls_ap": 0.5, "os_ap": 0.0},
-        {"ap_form": "mult", "ls_ap": 1.0, "os_ap": 0.0},
-        {"ap_form": "add", "ls_ap": 0.25, "os_ap": 0.25},
-        {"ap_form": "add", "ls_ap": 0.25, "os_ap": 0.5},
-        {"ap_form": "add", "ls_ap": 0.5, "os_ap": 0.25},
-        {"ap_form": "add", "ls_ap": 0.5, "os_ap": 0.5},
+        {"ap_form": "add", "ls_ap": 0.25, "os_ap": 10.0},
+        {"ap_form": "add", "ls_ap": 0.25, "os_ap": 20.0},
+        {"ap_form": "add", "ls_ap": 0.25, "os_ap": 40.0},
+        {"ap_form": "add", "ls_ap": 0.5, "os_ap": 10.0},
+        {"ap_form": "add", "ls_ap": 0.5, "os_ap": 20.0},
+        {"ap_form": "add", "ls_ap": 0.5, "os_ap": 40.0},
     ]
 
     rows = []
     grid_iter = list(product(ls_xy_vals, ls_z_vals, os_xyz_vals, time_configs, ap_setups))
-    grid_iter.extend(
-        product([0.04, 0.05], ls_z_vals, [75], time_configs, ap_setups)
-    )
     for param_id, (ls_xy, ls_z, os_xyz, (os_t, ls_t), ap) in enumerate(
         grid_iter
     ):
@@ -167,7 +176,7 @@ def make_gp_stage1_grid():
         )
 
     grid = pd.DataFrame(rows)
-    if grid.shape != (1134, 9):
+    if grid.shape != (108, 9):
         raise RuntimeError(f"Unexpected GP stage-1 grid shape: {grid.shape}.")
     if grid.drop(columns=["param_id"]).duplicated().any():
         raise RuntimeError("GP stage-1 grid contains duplicate parameter rows.")
@@ -200,11 +209,97 @@ def read_result_row(path):
     return result.iloc[0].to_dict()
 
 
-def completed_gp_results(result_dir):
+def _param_key(row):
+    return (
+        str(row["ap_form"]),
+        *tuple(round(float(row[col]), 12) for col in FLOAT_PARAM_COLUMNS),
+    )
+
+
+def result_index_key(row):
+    return (int(row["fold_idx"]), _param_key(row))
+
+
+def result_matches_param(row, param_row, fold_idx=None):
+    if row is None:
+        return False
+    if fold_idx is not None and int(row.get("fold_idx", -1)) != int(fold_idx):
+        return False
+    if str(row.get("ap_form")) != str(param_row["ap_form"]):
+        return False
+    return all(
+        np.isclose(float(row.get(col, np.nan)), float(param_row[col]))
+        for col in FLOAT_PARAM_COLUMNS
+    )
+
+
+def normalized_result_row(row, param_row, fold_idx):
+    normalized = dict(row)
+    normalized["param_id"] = int(param_row["param_id"])
+    normalized["fold_idx"] = int(fold_idx)
+    for col in PARAM_COLUMNS:
+        normalized[col] = param_row[col]
+    return normalized
+
+
+def load_result_index(result_dir):
+    result_dir = Path(result_dir)
+    result_index = {}
+    if not result_dir.exists():
+        return result_index
+    for path in sorted(result_dir.glob("param_*_fold_*.csv")):
+        row = read_result_row(path)
+        if row is None:
+            continue
+        result_index.setdefault(result_index_key(row), row)
+    return result_index
+
+
+def matching_result_row(result_dir, param_row, fold_idx, result_index=None):
+    if result_index is None:
+        result_index = load_result_index(result_dir)
+    row = result_index.get((int(fold_idx), _param_key(param_row)))
+    if result_matches_param(row, param_row, fold_idx):
+        return normalized_result_row(row, param_row, fold_idx)
+    return None
+
+
+def materialize_matching_result(result_dir, param_row, fold_idx, result_index=None):
+    row = matching_result_row(result_dir, param_row, fold_idx, result_index)
+    if row is None:
+        return None
+    out_path = result_path(result_dir, param_row["param_id"], fold_idx)
+    existing = read_result_row(out_path)
+    if not result_matches_param(existing, param_row, fold_idx):
+        write_result_row(out_path, row)
+        if result_index is not None:
+            result_index[result_index_key(row)] = row
+    return row
+
+
+def completed_gp_results(result_dir, param_grid=None):
     result_dir = Path(result_dir)
     rows = []
     if not result_dir.exists():
         return pd.DataFrame()
+
+    if param_grid is not None:
+        grid_by_key = {
+            _param_key(param_row): param_row
+            for _, param_row in param_grid.iterrows()
+        }
+        seen = set()
+        for row in load_result_index(result_dir).values():
+            param_row = grid_by_key.get(_param_key(row))
+            if param_row is None:
+                continue
+            fold_idx = int(row["fold_idx"])
+            key = (int(param_row["param_id"]), fold_idx)
+            if key in seen:
+                continue
+            rows.append(normalized_result_row(row, param_row, fold_idx))
+            seen.add(key)
+        return pd.DataFrame(rows)
 
     for path in sorted(result_dir.glob("param_*_fold_*.csv")):
         row = read_result_row(path)
@@ -225,6 +320,33 @@ def summarize_cv_results(results):
             mean_mse=("mse", "mean"),
             std_mse=("mse", "std"),
             n_folds=("fold_idx", "nunique"),
+            mean_fit_elapsed=("fit_elapsed", "mean"),
+            mean_predict_elapsed=("predict_elapsed", "mean"),
+            mean_total_elapsed=("total_elapsed", "mean"),
+        )
+        .sort_values(["mean_mse", "std_mse"], na_position="last")
+    )
+    return grouped
+
+
+def summarize_gp_results_by_config(results):
+    if len(results) == 0:
+        return pd.DataFrame()
+
+    results = results.copy()
+    if "total_elapsed" not in results.columns:
+        results["total_elapsed"] = results["fit_elapsed"] + results["predict_elapsed"]
+
+    group_cols = list(PARAM_COLUMNS)
+    grouped = (
+        results.groupby(group_cols, as_index=False, dropna=False)
+        .agg(
+            mean_mse=("mse", "mean"),
+            std_mse=("mse", "std"),
+            n_folds=("fold_idx", "nunique"),
+            n_result_rows=("fold_idx", "size"),
+            param_id_min=("param_id", "min"),
+            param_id_max=("param_id", "max"),
             mean_fit_elapsed=("fit_elapsed", "mean"),
             mean_predict_elapsed=("predict_elapsed", "mean"),
             mean_total_elapsed=("total_elapsed", "mean"),

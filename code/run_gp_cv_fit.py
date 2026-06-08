@@ -14,7 +14,14 @@ import pandas as pd
 CODE_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CODE_DIR))
 
-from eval_workflow import load_fold_arrays, read_result_row, result_path, write_result_row
+from eval_workflow import (
+    load_fold_arrays,
+    load_result_index,
+    materialize_matching_result,
+    result_path,
+    result_index_key,
+    write_result_row,
+)
 
 
 def parse_args():
@@ -46,23 +53,28 @@ def _jobs_from_args(args):
     return [(int(args.param_id), int(args.fold_idx))]
 
 
-def _run_one_fit(args, grid, fold_cache, param_id, fold_idx):
+def _run_one_fit(args, grid, fold_cache, result_index, param_id, fold_idx):
     import jax.numpy as jnp
     import jax.random as jr
 
     from gp import GaussianProcess
     from gp_kernels import make_indoor_outdoor_mean, make_wifi_kernel
 
-    out_path = result_path(args.result_dir, param_id, fold_idx)
-    completed_row = read_result_row(out_path)
-    if completed_row is not None:
-        print(f"Already complete: {out_path}", flush=True)
-        return completed_row
-
     param_matches = grid.loc[grid["param_id"] == param_id]
     if len(param_matches) != 1:
         raise ValueError(f"Expected exactly one row for param_id={param_id}.")
     param_row = param_matches.iloc[0]
+
+    out_path = result_path(args.result_dir, param_id, fold_idx)
+    completed_row = materialize_matching_result(
+        args.result_dir,
+        param_row,
+        fold_idx,
+        result_index,
+    )
+    if completed_row is not None:
+        print(f"Already complete for current config: {out_path}", flush=True)
+        return completed_row
 
     total_start = time.time()
     if fold_idx not in fold_cache:
@@ -124,6 +136,7 @@ def _run_one_fit(args, grid, fold_cache, param_id, fold_idx):
         },
     }
     write_result_row(out_path, row)
+    result_index[result_index_key(row)] = row
     print(
         f"Wrote {out_path} mse={row['mse']:.4f} "
         f"total={row['total_elapsed']:.1f}s",
@@ -140,6 +153,7 @@ def main():
     grid = pd.read_csv(args.grid_path)
     jobs = _jobs_from_args(args)
     fold_cache = {}
+    result_index = load_result_index(args.result_dir)
     worker_start = time.time()
     print(f"Worker starting {len(jobs)} fit(s)", flush=True)
 
@@ -148,7 +162,7 @@ def main():
             f"Worker fit {offset}/{len(jobs)}: param {param_id} fold {fold_idx}",
             flush=True,
         )
-        _run_one_fit(args, grid, fold_cache, param_id, fold_idx)
+        _run_one_fit(args, grid, fold_cache, result_index, param_id, fold_idx)
 
     # The process will exit after each chunk, but clear Python/JAX state as much
     # as possible for single-process smoke tests and CPU runs.

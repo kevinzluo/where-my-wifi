@@ -19,10 +19,14 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
     - `"none"`: spatial + temporal only.
     - `"mult"`: old multiplicative AP kernel.
     - `"add"`: additive AP kernel with separate `os_ap`.
+  - Current GP tuning grid searches only `"add"`; `"none"` and `"mult"` are retained for older result files/notebooks.
 
 - `code/eval_workflow.py`
   - Helpers for nested split generation, GP stage-1 grid generation, result-file paths, completed-result scanning, CV summaries, and loading split arrays.
   - Writes restartable per-fit CSV result rows.
+  - Completed-result scanning is parameter-aware: a CSV only counts as complete if its stored kernel parameters match the current grid row. This matters because the additive AP `os_ap` grid changed after earlier runs.
+  - Existing result CSVs are indexed once per stage/worker chunk, so restart checks do not repeatedly scan every file for every pending fit.
+  - `summarize_gp_results_by_config()` summarizes historical GP results by actual kernel parameters instead of `param_id`, because `param_id` has been reused across grid revisions.
 
 - `code/knn_features.py`
   - Extracted `WifiKNNFeatureTransformer` from notebook code for reuse.
@@ -51,20 +55,24 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
   - Includes `manifest.json`.
 
 - `code/gridsearch/gp_geo_stage1_grid.csv`
-  - 1134 GP configs.
+  - 108 GP configs.
   - Crosses:
-    - `ls_xy` values: `0.025, 0.035, 0.04, 0.05, 0.09`
-    - `os_xyz` values `10, 20, 25, 35, 50`, plus a targeted `75` slice for `ls_xy` values `0.04` and `0.05`
-    - temporal configs including time off
-    - AP forms: none/additive/multiplicative
+    - `ls_xy` values: `0.025, 0.035, 0.04`
+    - `ls_z` values: `0.25, 0.5`
+    - `os_xyz` values: `20, 25, 50`
+    - no temporal kernel: `os_t = 0` for every row
+    - AP form: additive only; no-AP and multiplicative AP are no longer searched
+    - additive AP output scales: `os_ap = 10.0, 20.0, 40.0`
+  - Earlier additive AP rows used smaller `os_ap` values; those result files are intentionally ignored by the parameter-aware completion checks.
 
 - `code/eval_results/`
   - Currently contains KNN tuning outputs:
     - `knn_geo5_cv_results.csv`
     - `knn_final_holdout.csv`
-  - GP result directories are expected but may be empty until notebooks run:
+  - GP result directories contain restartable per-fit CSVs:
     - `gp_stage1/`
     - `gp_stage2/`
+  - After the latest grid update, only exact matches to the current no-time/no-multiplicative grid count as complete.
   - Fixed-config robustness results are written under:
     - `fixed_config/`
 
@@ -72,7 +80,7 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
 
 - `code/gridsearch/GP Geo CV Tuning.ipynb`
   - Restartable GP tuning notebook.
-  - Stage 1: 1134 configs x 3 inner geo folds = 3402 GP fits.
+  - Stage 1: 108 configs x 3 inner geo folds = 324 GP fits.
   - Stage 2: top 25 configs x 5 inner geo folds = 125 GP fits.
   - Writes one CSV per `(param_id, fold_idx)` under `code/eval_results/gp_stage1/` or `gp_stage2/`.
   - Expensive loops now run sequential chunked subprocesses:
@@ -99,12 +107,14 @@ The workflow was changed from an old single-holdout/job-array GP grid search tow
 ## Modified Existing Notebooks
 
 - `code/gridsearch/Result Analysis.ipynb`
-  - Rewritten to summarize restartable GP result files.
+  - Rewritten to summarize restartable GP result files without filtering through the current grid.
+  - Historical restartable results are grouped by actual kernel parameters, not `param_id`.
+  - Also reads older aggregate `gridsearch*_results.csv` files into a separate legacy table because those are old holdout-style MSEs rather than nested geo-CV fold results.
   - Can select:
     - best overall model
     - best no-time model (`os_t == 0`)
     - best additive AP model (`ap_form == "add"`)
-    - best multiplicative AP model (`ap_form == "mult"`)
+    - best multiplicative AP model (`ap_form == "mult"`) only if using an older grid/results set that contains multiplicative rows
     - best no-AP model (`ap_form == "none"`)
 
 - `code/gridsearch/GridSearch Setup.ipynb`
@@ -159,10 +169,17 @@ Lightweight checks were run only; no full GP grid fitting was executed by Codex.
   - inner folds are subsets of outer train
   - inner held-out fold union covers outer train
 - GP grid validation passed:
-  - 1134 rows
+  - 108 rows
   - unique `param_id`
   - no duplicate config rows
-  - AP forms include `none`, `add`, `mult`
+  - AP form is only `add`
+  - all rows have `os_t = 0`
+  - all rows have `ls_xy < 0.05`
+  - additive AP rows use `os_ap = 10.0, 20.0, 40.0`
+- Parameter-aware result matching check after the latest grid update:
+  - stage 1 currently matches 0 old fits under the new grid
+  - stage 1 currently has 324 pending fits
+  - stage 2 currently matches 0 old fits, because prior stage-2 results were multiplicative AP
 - Kernel sanity checks passed under `JAX_PLATFORMS=cpu`.
 - Restart-result scan helper was dry-run using a temp directory.
 - `Fixed Config Evaluation.ipynb` setup/helper cells were smoke-tested without fitting models.
@@ -193,7 +210,7 @@ If a run dies:
 
 Suggested sanity-review areas:
 
-- Check whether `ap_form="none"` and additive/multiplicative kernel formulas match the intended modeling story.
+- Check whether the additive AP kernel formula matches the intended modeling story. No-AP and multiplicative AP support remains in code for older runs, but neither is searched by the current grid.
 - Check whether using existing `code/cv/geo` fold 0 as the outer split is acceptable for the writeup.
 - Check whether `ROBUSTNESS_FOLDS = [1, 2, 3, 4]` is the right default, or if fold 0 should also be included in fixed-config robustness summaries.
 - Check the KNN hyperparameter grid in `KNN Geo CV Tuning.ipynb`; it currently produced `knn__n_neighbors = 54` in the saved result, so verify the intended neighbor range.
